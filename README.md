@@ -18,7 +18,7 @@ Download [Unity Hub](https://unity.com/download) and download [Unity v2021.3.39f
 
 #### Haply
 
-Install the [Haply Inverse Installer](https://develop.haply.co/releases/installer) v2.0 or greater.
+Install the [Haply Inverse Installer](https://develop.haply.co/releases/installer) v2.X.X.
 
 * Ensure the Haply Inverse Service is running.
 * Before launching the scene, ensure your Inverse3 and VerseGrip devices are connected and calibrated.
