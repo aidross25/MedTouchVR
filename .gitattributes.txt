@@ -1,0 +1,4 @@
+*.txt text eol=lf
+*.sh text eol=lf
+*.cs text eol=crlf
+*.html text eol=lf
