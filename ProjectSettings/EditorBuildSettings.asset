@@ -5,12 +5,18 @@ EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
   m_Scenes:
-  - enabled: 1
+  - enabled: 0
     path: Assets/Scenes/SampleScene.unity
     guid: 9fc0d4010bbf28b4594072e72b8655ab
   - enabled: 0
     path: Assets/Samples/Haply Inverse for Unity/2.2.0/Tutorials/1_ForceAndPosition/ForceAndPosition.unity
     guid: 42ea5f036ce887b40b66f2a125ee92ee
+  - enabled: 1
+    path: Assets/Scenes/mainMenu.unity
+    guid: 19978608db97b514991070cdad006005
+  - enabled: 1
+    path: Assets/Scenes/operatingRoom.unity
+    guid: 22467836205d2734694b570cd4c9a2f7
   m_configObjects:
     com.unity.xr.management.loader_settings: {fileID: 11400000, guid: db0291e500e49be4f97c82f4fc1ca8ae, type: 2}
     com.unity.xr.openxr.settings4: {fileID: 11400000, guid: 060985cec78ed6f45b5e3abbc047ba38, type: 2}
