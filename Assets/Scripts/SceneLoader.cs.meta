@@ -1,0 +1,21 @@
+fileFormatVersion: 2
+guid: 8aa3a272593d490458014488773fb3d3
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - playMenu: {instanceID: 0}
+  - loadPopup: {instanceID: 0}
+  - lastConfigNameText: {instanceID: 0}
+  - procedureMenu: {instanceID: 0}
+  - creditsView: {instanceID: 0}
+  - playButton: {instanceID: 0}
+  - loadButton: {instanceID: 0}
+  - newGameButton: {instanceID: 0}
+  - creditsButton: {instanceID: 0}
+  - backButton: {instanceID: 0}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
