@@ -10,9 +10,9 @@ public class MainMenu : MonoBehaviour
 {
     public AudioSource clickSound;    // Reference to the AudioSource component for the click sound
 
-    public async void PlayGame() {
+    public async void NewSim() {
         await PlayClickedSound();
-        // SceneManager.LoadScene("operatingRoom");
+        SceneManager.LoadScene("operatingRoom");
     }
 
     public async void QuitGame() {
