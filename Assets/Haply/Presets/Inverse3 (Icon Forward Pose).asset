@@ -1,0 +1,50 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 437397f8b4b74acdb68761310cc96309, type: 3}
+  m_Name: Inverse3 (Icon Forward Pose)
+  m_EditorClassIdentifier: 
+  m_Comments: 'Coordinate system converter for Inverse3 device
+
+    LED icon facing
+    the user, arm on the side.'
+  m_ReadOnly: 1
+  m_Value:
+    leftPositionSettings:
+      negate:
+        x: 0
+        y: 0
+        z: 0
+      axisMapping: 3
+      positionOffset: {x: 0, y: 0, z: 0}
+    leftOrientationSettings:
+      negate:
+        x: 0
+        y: 1
+        z: 1
+        w: 0
+      axisMapping: 2
+      rotationOffset: {x: 0.49999997, y: -0.49999997, z: -0.49999997, w: 0.49999997}
+    rightPositionSettings:
+      negate:
+        x: 0
+        y: 0
+        z: 0
+      axisMapping: 3
+      positionOffset: {x: 0, y: 0, z: 0}
+    rightOrientationSettings:
+      negate:
+        x: 0
+        y: 1
+        z: 1
+        w: 0
+      axisMapping: 2
+      rotationOffset: {x: 0.49999997, y: 0.49999997, z: 0.49999997, w: 0.49999997}
