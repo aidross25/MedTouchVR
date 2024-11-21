@@ -529,7 +529,7 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 293640046}
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalPosition: {x: 0, y: -0.252, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -2344,15 +2344,15 @@ Transform:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1379390917}
-  m_LocalRotation: {x: 0, y: -0.17364825, z: 0, w: 0.9848078}
-  m_LocalPosition: {x: 0.076, y: 0.101, z: -0.239}
+  m_LocalRotation: {x: 0, y: 0.08715578, z: 0, w: 0.9961947}
+  m_LocalPosition: {x: 0.0388, y: 0.5007, z: -0.284}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 293640047}
   m_Father: {fileID: 446946410}
   m_RootOrder: 0
-  m_LocalEulerAnglesHint: {x: 0, y: -20, z: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 10, z: 0}
 --- !u!1001 &1388234457
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -3478,27 +3478,27 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: fd54b9aa083f3da40bfc5bf042ba09d1, type: 3}
       propertyPath: m_LocalScale.x
-      value: 7
+      value: 1
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: fd54b9aa083f3da40bfc5bf042ba09d1, type: 3}
       propertyPath: m_LocalScale.y
-      value: 7
+      value: 1
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: fd54b9aa083f3da40bfc5bf042ba09d1, type: 3}
       propertyPath: m_LocalScale.z
-      value: 7
+      value: 1
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: fd54b9aa083f3da40bfc5bf042ba09d1, type: 3}
       propertyPath: m_LocalPosition.x
-      value: -1.224
+      value: -0.799
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: fd54b9aa083f3da40bfc5bf042ba09d1, type: 3}
       propertyPath: m_LocalPosition.y
-      value: 0.337
+      value: 0.425
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: fd54b9aa083f3da40bfc5bf042ba09d1, type: 3}
       propertyPath: m_LocalPosition.z
-      value: -6.272
+      value: -6.316
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: fd54b9aa083f3da40bfc5bf042ba09d1, type: 3}
       propertyPath: m_LocalRotation.w
@@ -3576,10 +3576,10 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   inverse3: {fileID: 531438280}
   versegripController: {fileID: 531438278}
-  stiffness: 512
-  damping: 0.65
+  stiffness: 300
+  damping: 1.04
   ballPrefab: {fileID: 418033840}
-  ballSize: 0.01
-  creationInterval: 0.5
-  cylinderDiameter: 0.005
-  cylinderColor: {r: 0.5254902, g: 0.81568635, b: 0.2784314, a: 1}
+  ballSize: 0
+  creationInterval: 0.01
+  cylinderDiameter: 0.001
+  cylinderColor: {r: 0.6790178, g: 0.80981016, b: 0.9748427, a: 1}

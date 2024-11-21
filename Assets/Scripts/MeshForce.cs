@@ -12,10 +12,10 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
         public Inverse3 inverse3;
         public VerseGrip versegripController; // VersegripController for button input
 
-        [Range(0, 800)]
+        [Range(0, 1000)]
         public float stiffness = 300f;
 
-        [Range(0, 3)]
+        [Range(0, 5)]
         public float damping = 1f;
 
         public GameObject ballPrefab;
@@ -40,6 +40,10 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
 
         private bool isPressing = false; // Tracks whether the button is currently being pressed
         private GameObject lastBall = null; // Tracks the last ball created in the current session
+
+        // Double-click detection variables
+        private float lastButtonPressTime = 0f; // Time of the last button press
+        private float doubleClickThreshold = 0.35f; // Maximum time between clicks for a double-click (in seconds)
 
         private void SaveSceneData()
         {
@@ -75,6 +79,7 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
         {
             var force = Vector3.zero;
 
+            // Adjust raycast to prevent clipping
             RaycastHit hitInfo;
             Ray ray = new Ray(cursorPosition, Vector3.down);
             if (_meshCollider.Raycast(ray, out hitInfo, Mathf.Infinity))
@@ -82,19 +87,27 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
                 Vector3 closestPoint = hitInfo.point;
                 Vector3 normal = hitInfo.normal;
 
+                // Adjust distance and penetration for better collision feedback
                 float distance = Vector3.Distance(cursorPosition, closestPoint);
                 float penetration = cursorRadius.x - distance;
 
+                // Only apply force if there is penetration
                 if (penetration > 0)
                 {
                     force = normal * penetration * stiffness;
                     force -= cursorVelocity * damping;
 
+                    // Prevent rapid ball creation and control spacing
                     if (isPressing && Time.time - _lastBallCreationTime >= creationInterval)
                     {
                         CreateBallAtCollisionPoint(closestPoint);
                         _lastBallCreationTime = Time.time;
                     }
+                }
+                else
+                {
+                    // Apply a gentle repulsion to prevent clipping, without pushing the cursor too far
+                    force = normal * -0.1f; // Slight force to prevent penetration
                 }
             }
 
@@ -180,16 +193,21 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
                 inverse3.CursorSetLocalForce(_calculatedForce);
                 _forceCalculated = false;
             }
-
-            // No need to handle button input in Update anymore; it's handled through events
-            if (Input.GetKeyDown(KeyCode.X))
-            {
-                DeleteAllCylindersAndBalls();
-            }
         }
 
         private void OnButtonDown(VerseGrip grip, VerseGripButton button)
         {
+            // Detect if this is a double-click event
+            if (Time.time - lastButtonPressTime <= doubleClickThreshold)
+            {
+                // Double-click detected, clear all objects
+                DeleteAllCylindersAndBalls();
+            }
+            else
+            {
+                lastButtonPressTime = Time.time; // Update the last button press time
+            }
+
             if (!isPressing)
             {
                 isPressing = true;
