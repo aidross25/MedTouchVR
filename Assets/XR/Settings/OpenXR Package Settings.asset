@@ -278,14 +278,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b5a1f07dc5afe854f9f12a4194aca3fb, type: 3}
   m_Name: WebGL
   m_EditorClassIdentifier: 
-  features:
-  - {fileID: 3792018996452145308}
+  features: []
   m_renderMode: 1
-  m_autoColorSubmissionMode: 1
-  m_colorSubmissionModes:
-    m_List: 00000000
   m_depthSubmissionMode: 0
-  m_optimizeBufferDiscards: 0
   m_symmetricProjection: 0
 --- !u!114 &-3714777199740633578
 MonoBehaviour:
@@ -340,7 +335,6 @@ MonoBehaviour:
   - {fileID: 764341558130088556}
   - {fileID: 3051413224593257100}
   - {fileID: -394228204298552634}
-  - {fileID: 3659531810677460208}
   - {fileID: -1197049246362363887}
   - {fileID: 414574047723761972}
   - {fileID: -7880342069645412380}
@@ -348,13 +342,8 @@ MonoBehaviour:
   - {fileID: 5323698172603714739}
   - {fileID: -7092545665998993846}
   - {fileID: 7100343791938691095}
-  - {fileID: 3874796454119133895}
   m_renderMode: 0
-  m_autoColorSubmissionMode: 1
-  m_colorSubmissionModes:
-    m_List: 00000000
   m_depthSubmissionMode: 0
-  m_optimizeBufferDiscards: 0
   m_symmetricProjection: 0
 --- !u!114 &-3143527564851299247
 MonoBehaviour:
@@ -571,9 +560,7 @@ MonoBehaviour:
     enabled: 1
   forceRemoveInternetPermission: 0
   symmetricProjection: 0
-  foveatedRenderingApi: 0
   systemSplashScreen: {fileID: 0}
-  optimizeBufferDiscards: 1
   lateLatchingMode: 0
   lateLatchingDebug: 0
 --- !u!114 &11400000
@@ -717,7 +704,6 @@ MonoBehaviour:
   - {fileID: -6811576024215822830}
   - {fileID: -7976239937116939520}
   - {fileID: -2049328091829483819}
-  - {fileID: 2674456475565600013}
   - {fileID: 1997966127870489695}
   - {fileID: 2299987094015912563}
   - {fileID: 3813547551952514725}
@@ -726,13 +712,8 @@ MonoBehaviour:
   - {fileID: 4009224804957853515}
   - {fileID: 1283162079013454995}
   - {fileID: 7053904220748124949}
-  - {fileID: 4097169308989989495}
   m_renderMode: 0
-  m_autoColorSubmissionMode: 1
-  m_colorSubmissionModes:
-    m_List: 00000000
   m_depthSubmissionMode: 0
-  m_optimizeBufferDiscards: 0
   m_symmetricProjection: 0
 --- !u!114 &2075393199499866046
 MonoBehaviour:
@@ -820,6 +801,7 @@ MonoBehaviour:
   m_Name: MetaQuestTouchPlusControllerProfile Standalone
   m_EditorClassIdentifier: 
   m_enabled: 1
+  <failedInitialization>k__BackingField: 0
   nameUi: Meta Quest Touch Plus Controller Profile
   version: 0.0.1
   featureIdInternal: com.unity.openxr.feature.input.metaquestplus
@@ -920,6 +902,7 @@ MonoBehaviour:
   m_Name: MetaQuestTouchPlusControllerProfile Android
   m_EditorClassIdentifier: 
   m_enabled: 0
+  <failedInitialization>k__BackingField: 0
   nameUi: Meta Quest Touch Plus Controller Profile
   version: 0.0.1
   featureIdInternal: com.unity.openxr.feature.input.metaquestplus
@@ -1215,6 +1198,7 @@ MonoBehaviour:
   m_Name: MetaQuestTouchPlusControllerProfile WSA
   m_EditorClassIdentifier: 
   m_enabled: 0
+  <failedInitialization>k__BackingField: 0
   nameUi: Meta Quest Touch Plus Controller Profile
   version: 0.0.1
   featureIdInternal: com.unity.openxr.feature.input.metaquestplus
@@ -1243,7 +1227,6 @@ MonoBehaviour:
   - {fileID: -4047993859812452126}
   - {fileID: 7007857938878574843}
   - {fileID: 2341138704634172266}
-  - {fileID: 7461725955138038728}
   - {fileID: -7900444126540828243}
   - {fileID: 4850034299021665259}
   - {fileID: -2037356780776039342}
@@ -1251,11 +1234,6 @@ MonoBehaviour:
   - {fileID: -6604630552490421799}
   - {fileID: -7441159502635840846}
   - {fileID: -2108542301560398923}
-  - {fileID: -3143527564851299247}
   m_renderMode: 1
-  m_autoColorSubmissionMode: 1
-  m_colorSubmissionModes:
-    m_List: 00000000
   m_depthSubmissionMode: 0
-  m_optimizeBufferDiscards: 0
   m_symmetricProjection: 0
