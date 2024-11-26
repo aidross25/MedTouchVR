@@ -1,0 +1,83 @@
+﻿#pragma kernel Project
+#pragma kernel Apply
+
+#include "MathUtils.cginc"
+#include "AtomicDeltas.cginc"
+
+StructuredBuffer<int> particleIndices;
+StructuredBuffer<float> restBends;
+StructuredBuffer<float2> stiffnesses;
+RWStructuredBuffer<float> lambdas;
+
+RWStructuredBuffer<float4> positions;
+StructuredBuffer<float> invMasses;
+
+// Variables set from the CPU
+uint activeConstraintCount;
+float deltaTime;
+float sorFactor;
+
+[numthreads(128, 1, 1)]
+void Project (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+
+    if (i >= activeConstraintCount) return;
+    
+    int p1 = particleIndices[i * 3];
+    int p2 = particleIndices[i * 3 + 1];
+    int p3 = particleIndices[i * 3 + 2];
+
+    float w1 = invMasses[p1];
+    float w2 = invMasses[p2];
+    float w3 = invMasses[p3];
+
+    float wsum = w1 + w2 + 2 * w3;
+    if (wsum > 0)
+    { 
+        float4 bendVector = positions[p3] - (positions[p1] + positions[p2] + positions[p3]) / 3.0f;
+        float bend = length(bendVector);
+
+        if (bend > 0)
+        {
+            float constraint = 1.0f - (stiffnesses[i].x + restBends[i]) / bend;
+
+            // remove this to force a certain curvature.
+            if (constraint >= 0)
+            {
+                // calculate time adjusted compliance
+                float compliance = stiffnesses[i].y / (deltaTime * deltaTime);
+
+                // since the third particle moves twice the amount of the other 2, the modulus of its gradient is 2:
+                float dlambda = (-constraint - compliance * lambdas[i]) / (wsum + compliance + EPSILON);
+                float4 correction = dlambda * bendVector;
+
+                lambdas[i] += dlambda;
+
+                float4 delta1 = -correction * 2 * w1;
+                float4 delta2 = -correction * 2 * w2;
+                float4 delta3 = correction * 4 * w3;
+
+                AddPositionDelta(p1, delta1);
+                AddPositionDelta(p2, delta2);
+                AddPositionDelta(p3, delta3);         
+            }
+        }
+    }
+}
+
+[numthreads(128, 1, 1)]
+void Apply (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+   
+    if (i >= activeConstraintCount) return;
+
+    int p1 = particleIndices[i * 3];
+    int p2 = particleIndices[i * 3 + 1];
+    int p3 = particleIndices[i * 3 + 2];
+
+    ApplyPositionDelta(positions, p1, sorFactor);
+    ApplyPositionDelta(positions, p2, sorFactor);
+    ApplyPositionDelta(positions, p3, sorFactor);
+}

@@ -1,0 +1,64 @@
+﻿#pragma kernel Project
+#pragma kernel Apply
+
+#include "MathUtils.cginc"
+#include "AtomicDeltas.cginc"
+
+StructuredBuffer<int> particleIndices;
+StructuredBuffer<float2> maxLengthScale;
+StructuredBuffer<float> stiffnesses;
+RWStructuredBuffer<float> lambdas;
+
+RWStructuredBuffer<float4> positions;
+StructuredBuffer<float> invMasses;
+
+// Variables set from the CPU
+uint activeConstraintCount;
+float deltaTime;
+float sorFactor;
+
+[numthreads(128, 1, 1)]
+void Project (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+
+    if (i >= activeConstraintCount) return;
+
+    int p1 = particleIndices[i * 2];
+    int p2 = particleIndices[i * 2 + 1];
+
+    float w1 = invMasses[p1];
+    float w2 = invMasses[p2];
+
+    // calculate time adjusted compliance
+    float compliance = stiffnesses[i] / (deltaTime * deltaTime);
+
+    // calculate position and lambda deltas:
+    float4 dist = positions[p1] - positions[p2];
+    float d = length(dist);
+
+    // calculate constraint value (distance - rest length)
+    float constraint = d - (maxLengthScale[i].x * maxLengthScale[i].y);
+
+    if (constraint > 0)
+    {
+        // calculate lambda and position deltas:
+        float dlambda = (-constraint - compliance * lambdas[i]) / (w1 + w2 + compliance + EPSILON);
+        float4 delta = dlambda * dist / (d + EPSILON);
+        lambdas[i] += dlambda;
+        
+        AddPositionDelta(p1, delta * w1);
+    }
+}
+
+[numthreads(128, 1, 1)]
+void Apply (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+   
+    if (i >= activeConstraintCount) return;
+
+    int p = particleIndices[i * 2];
+
+    ApplyPositionDelta(positions, p, sorFactor);
+}

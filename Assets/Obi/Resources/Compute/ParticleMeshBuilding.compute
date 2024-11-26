@@ -1,0 +1,72 @@
+﻿#pragma kernel BuildMesh
+
+#include "MathUtils.cginc"
+
+struct RendererData
+{
+    float4 color;
+    float radiusScale;
+};
+
+StructuredBuffer<int> particleIndices;
+
+StructuredBuffer<float4> positions;
+StructuredBuffer<float4> orientations;
+StructuredBuffer<float4> radii;
+StructuredBuffer<float4> colors;
+
+StructuredBuffer<int> rendererIndices;
+StructuredBuffer<RendererData> rendererData;
+
+RWByteAddressBuffer vertices;
+RWByteAddressBuffer indices;
+
+uint firstParticle;
+uint particleCount;
+
+[numthreads(128, 1, 1)]
+void BuildMesh (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+
+    if (i >= particleCount) return;
+    
+    int p = particleIndices[firstParticle + i];
+    int r = rendererIndices[firstParticle + i];
+
+    // <<2 = multiply by 4 to get byte address, since a float/int is 4 bytes in size.
+    
+    // particle data is the same for all 4 vertices:
+    for (uint v = i*4; v < i*4 + 4; ++v)
+    {
+        int base = v*23;
+        
+        // pos
+        vertices.Store4(base<<2, asuint(float4(positions[p].xyz, 1)));
+
+        // color:
+        vertices.Store4((base+7)<<2, asuint(colors[p] * rendererData[r].color));
+        
+        // b1, b2, b3:
+        vertices.Store4((base+11)<<2, asuint( float4(rotate_vector(orientations[p],float3(1,0,0)),radii[p].x * radii[p].w * rendererData[r].radiusScale) ));
+        vertices.Store4((base+15)<<2, asuint( float4(rotate_vector(orientations[p],float3(0,1,0)),radii[p].y * radii[p].w * rendererData[r].radiusScale) ));
+        vertices.Store4((base+19)<<2, asuint( float4(rotate_vector(orientations[p],float3(0,0,1)),radii[p].z * radii[p].w * rendererData[r].radiusScale) ));
+    }
+
+    //different offset for each vertex:
+    int base = i*4;
+    vertices.Store3((base*23 + 4)<<2, asuint(float3(1,1,0)));
+    vertices.Store3(((base+1)*23 + 4)<<2, asuint(float3(-1,1,0)));
+    vertices.Store3(((base+2)*23 + 4)<<2, asuint(float3(-1,-1,0)));
+    vertices.Store3(((base+3)*23 + 4)<<2, asuint(float3(1,-1,0)));
+
+    // indices:
+    indices.Store((i*6)<<2, asuint(i*4+2));
+    indices.Store((i*6+1)<<2, asuint(i*4+1));
+    indices.Store((i*6+2)<<2, asuint(i*4));
+
+    indices.Store((i*6+3)<<2, asuint(i*4+3));
+    indices.Store((i*6+4)<<2, asuint(i*4+2));
+    indices.Store((i*6+5)<<2, asuint(i*4));
+}
+

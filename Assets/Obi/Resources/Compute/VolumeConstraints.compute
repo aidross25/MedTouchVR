@@ -1,0 +1,153 @@
+﻿#pragma kernel Gradients
+#pragma kernel CalculateVolume
+#pragma kernel Denominators
+#pragma kernel Constraint
+#pragma kernel AccumulateDeltas
+#pragma kernel Apply
+
+//#pragma kernel Project
+//#pragma kernel Apply
+
+#include "MathUtils.cginc"
+#include "AtomicDeltas.cginc"
+
+StructuredBuffer<int> triangles;
+StructuredBuffer<int> firstTriangle;
+StructuredBuffer<int> numTriangles;
+StructuredBuffer<float> restVolumes;
+StructuredBuffer<float2> pressureStiffness;
+RWStructuredBuffer<float> lambdas;
+
+RWStructuredBuffer<uint> denominators; 
+RWStructuredBuffer<uint> volumes; 
+RWStructuredBuffer<uint4> gradients; 
+
+StructuredBuffer<int> particles;
+StructuredBuffer<int> particleConstraintIndex;
+StructuredBuffer<int> triangleConstraintIndex;
+
+RWStructuredBuffer<float4> positions;
+StructuredBuffer<float> invMasses;
+
+// Variables set from the CPU
+uint activeConstraintCount;
+uint trianglesCount;
+uint particlesCount;
+
+float deltaTime;
+float sorFactor;
+
+
+void AccumulateGradient(in int index, in float3 grad)
+{
+    InterlockedAddFloat(gradients, index, 0, grad.x);
+    InterlockedAddFloat(gradients, index, 1, grad.y);
+    InterlockedAddFloat(gradients, index, 2, grad.z);
+}
+
+[numthreads(128, 1, 1)]
+void Gradients (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+
+    if (i >= trianglesCount) return;
+  
+    int v = i * 3;
+    int i1 = triangles[v];
+    int i2 = triangles[v + 1];
+    int i3 = triangles[v + 2];
+
+    //accumulate gradient for each particle in the triangle:
+    AccumulateGradient(i1,cross(positions[i2].xyz, positions[i3].xyz));
+    AccumulateGradient(i2,cross(positions[i3].xyz, positions[i1].xyz));
+    AccumulateGradient(i3,cross(positions[i1].xyz, positions[i2].xyz));
+}
+
+[numthreads(128, 1, 1)]
+void CalculateVolume (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+
+    if (i >= trianglesCount) return;
+  
+    int constraintIndex = triangleConstraintIndex[i];
+
+    int v = i * 3;
+    int i1 = triangles[v];
+    int i2 = triangles[v + 1];
+    int i3 = triangles[v + 2];
+
+    float vol = dot(cross(positions[i1].xyz, positions[i2].xyz), positions[i3].xyz) / 6.0f;
+    InterlockedAddFloat(volumes, triangleConstraintIndex[i],vol);
+}
+
+// One denominator per constraint
+// each particle in the constraint contributes only once.
+
+[numthreads(128, 1, 1)]
+void Denominators (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+
+    if (i >= particlesCount) return;
+
+    int p = particles[i];
+
+    float3 grad = asfloat(gradients[p]).xyz;
+    float denom = invMasses[p] * dot(grad, grad);
+    InterlockedAddFloat(denominators, particleConstraintIndex[i], denom);
+}
+
+[numthreads(128, 1, 1)]
+void Constraint (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+
+    if (i >= activeConstraintCount) return;
+
+    float compliance = pressureStiffness[i].y / (deltaTime * deltaTime);
+
+    // equality constraint: volume - pressure * rest volume = 0
+    float constraint = asfloat(volumes[i]) - pressureStiffness[i].x * restVolumes[i];
+
+    // calculate lagrange multiplier delta:
+    float dlambda = (-constraint - compliance * 0) / (asfloat(denominators[i]) + compliance + EPSILON);
+    lambdas[i] = dlambda;//+= dlambda;
+
+    volumes[i] = asuint(0);
+    denominators[i] = asuint(0);
+}
+
+[numthreads(128, 1, 1)]
+void AccumulateDeltas (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+
+    if (i >= particlesCount) return;
+
+    int p = particles[i];
+    int c = particleConstraintIndex[i];
+
+    AddPositionDelta(p, lambdas[c] * invMasses[p] * asfloat(gradients[p]));
+    gradients[p] = asuint(FLOAT4_ZERO);
+}
+
+[numthreads(128, 1, 1)]
+void Apply (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+   
+    if (i >= activeConstraintCount) return;
+
+    for (int j = 0; j < numTriangles[i]; ++j)
+    {
+        int v = (firstTriangle[i] + j) * 3;
+        int p1 = triangles[v];
+        int p2 = triangles[v + 1];
+        int p3 = triangles[v + 2];
+
+        ApplyPositionDelta(positions, p1, sorFactor);
+        ApplyPositionDelta(positions, p2, sorFactor);
+        ApplyPositionDelta(positions, p3, sorFactor);
+    }
+}

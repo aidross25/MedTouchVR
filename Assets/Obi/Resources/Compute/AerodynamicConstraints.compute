@@ -1,0 +1,61 @@
+﻿#pragma kernel Project
+
+#include "MathUtils.cginc"
+#include "AtomicDeltas.cginc"
+
+StructuredBuffer<int> particleIndices;
+StructuredBuffer<float> aerodynamicCoeffs;
+
+StructuredBuffer<float4> positions;
+StructuredBuffer<uint4> normals;
+StructuredBuffer<float4> wind;
+StructuredBuffer<float> invMasses;
+
+RWStructuredBuffer<float4> velocities;
+
+// Variables set from the CPU
+uint activeConstraintCount;
+float deltaTime;
+
+[numthreads(128, 1, 1)]
+void Project (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+
+    if (i >= activeConstraintCount) return;
+
+    int p = particleIndices[i];
+
+    float area = aerodynamicCoeffs[i * 3];
+    float dragCoeff = aerodynamicCoeffs[i * 3 + 1];
+    float liftCoeff = aerodynamicCoeffs[i * 3 + 2];
+
+    if (invMasses[p] > 0)
+    {
+        float4 relVelocity = velocities[p] - wind[p];
+        float rvSqrMag = dot(relVelocity, relVelocity);
+
+        if (rvSqrMag < EPSILON)
+            return;
+
+        float4 rvNorm = relVelocity / sqrt(rvSqrMag);
+
+        // calculate surface normal (always facing wind)
+        float4 surfNormal = asfloat(normals[p]) * sign(dot(asfloat(normals[p]), rvNorm));
+
+        // aerodynamic_factor was originally multiplied by air_density. The density is now premultiplied in lift and drag.
+        float aerodynamicFactor = 0.5f * rvSqrMag * area;
+        float attackAngle = dot(surfNormal,rvNorm);
+
+        float3 liftDirection = normalizesafe(cross(cross(surfNormal.xyz, rvNorm.xyz), rvNorm.xyz));
+
+        //drag:
+        velocities[p] += (-dragCoeff * rvNorm +
+
+                          // lift:
+                          liftCoeff * float4(liftDirection.xyz,0)) *
+
+                          // scale
+                          attackAngle * min(aerodynamicFactor * invMasses[p] * deltaTime, 1000);
+    }
+}

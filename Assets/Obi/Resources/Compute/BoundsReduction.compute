@@ -1,0 +1,93 @@
+﻿#pragma kernel RuntimeSimplexBounds SIMPLEX_BOUNDS=RuntimeSimplexBounds USE_COLLISION_MAT
+#pragma kernel EditSimplexBounds SIMPLEX_BOUNDS=EditSimplexBounds 
+#pragma kernel Reduce
+
+#include "Simplex.cginc"
+#include "Bounds.cginc"
+#include "CollisionMaterial.cginc"
+#include "MathUtils.cginc"
+#include "Integration.cginc"
+#include "SolverParameters.cginc"
+
+StructuredBuffer<int> simplices;
+StructuredBuffer<float4> positions;
+StructuredBuffer<float4> velocities;
+StructuredBuffer<float4> principalRadii;
+StructuredBuffer<float4> fluidMaterials;
+
+RWStructuredBuffer<aabb> simplexBounds;
+RWStructuredBuffer<aabb> reducedBounds;
+
+float deltaTime;
+
+groupshared aabb sdata[128]; 
+
+[numthreads(256, 1, 1)]
+void SIMPLEX_BOUNDS (uint3 id : SV_DispatchThreadID)
+{
+    unsigned int i = id.x;
+    if (i >= pointCount + edgeCount + triangleCount)
+    {
+        reducedBounds[i].min_ =  float4(FLT_MAX,FLT_MAX,FLT_MAX,0);
+        reducedBounds[i].max_ = -float4(FLT_MAX,FLT_MAX,FLT_MAX,0);
+        return;
+    }
+
+    int simplexSize;
+    int simplexStart = GetSimplexStartAndSize(i, simplexSize);
+   
+    aabb sxBounds, soBounds;
+    sxBounds.min_ = soBounds.min_ = float4(FLT_MAX,FLT_MAX,FLT_MAX,0);
+    sxBounds.max_ = soBounds.max_ = float4(-FLT_MAX,-FLT_MAX,-FLT_MAX,0);
+
+    for (int j = 0; j < simplexSize; ++j)
+    {
+        int p = simplices[simplexStart + j];
+        
+        #if USE_COLLISION_MAT
+            int m = collisionMaterialIndices[p];
+            float solidRadius = principalRadii[p].x + collisionMargin + (m >= 0 ? collisionMaterials[m].stickDistance : 0);
+        #else
+            float solidRadius = principalRadii[p].x + collisionMargin;
+        #endif
+        
+        // Expand simplex bounds, using both the particle's original position and its velocity:
+        sxBounds.EncapsulateParticle(positions[p],
+                                     IntegrateLinear(positions[p], velocities[p], deltaTime * particleCCD), 
+                                     max(solidRadius, fluidMaterials[p].x * 0.5f));
+
+        soBounds.EncapsulateParticle(positions[p],
+                                     IntegrateLinear(positions[p], velocities[p], deltaTime), 
+                                     solidRadius);
+                                     
+    }
+
+    simplexBounds[i] = sxBounds;
+    reducedBounds[i] = soBounds;
+}
+
+[numthreads( 256, 1, 1)]
+void Reduce( uint3 threadIdx : SV_GroupThreadID, uint3 groupIdx : SV_GroupID)
+{
+    // each thread loads two elements from global to shared mem and combines them:
+    unsigned int tid = threadIdx.x;
+    unsigned int i = groupIdx.x * 256 + tid;
+    sdata[tid] = reducedBounds[i];
+    sdata[tid].EncapsulateBounds(reducedBounds[i + 128]);
+
+    GroupMemoryBarrierWithGroupSync(); 
+
+    // do reduction in shared mem
+    for (unsigned int s = 64; s > 0; s >>= 1)
+    {
+        if (tid < s) 
+        {
+            sdata[tid].EncapsulateBounds(sdata[tid + s]); 
+        }
+        GroupMemoryBarrierWithGroupSync(); 
+    }
+
+    // write result for this group to global mem
+    if (tid == 0) 
+        reducedBounds[groupIdx.x] = sdata[0]; 
+}

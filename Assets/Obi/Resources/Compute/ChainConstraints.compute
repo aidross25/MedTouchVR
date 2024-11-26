@@ -1,0 +1,159 @@
+﻿#pragma kernel Project
+#pragma kernel Apply
+
+#include "MathUtils.cginc"
+#include "AtomicDeltas.cginc"
+
+StructuredBuffer<int> particleIndices;
+StructuredBuffer<int> firstIndex;
+StructuredBuffer<int> numIndices;
+StructuredBuffer<float2> restLengths;
+
+RWStructuredBuffer<float4> ni; // (ni:constraint gradient, di:desired lenght)
+RWStructuredBuffer<float3> diagonals; // (subdiagonals), bi (diagonals) and ci (superdiagonals):
+
+RWStructuredBuffer<float4> positions;
+StructuredBuffer<float> invMasses;
+
+// Variables set from the CPU
+uint activeConstraintCount;
+float deltaTime;
+float sorFactor;
+
+[numthreads(128, 1, 1)]
+void Project (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int c = id.x;
+
+    if (c >= activeConstraintCount) return;
+
+    int numEdges = numIndices[c] - 1;
+    int first = firstIndex[c];
+    float minLength = restLengths[c].x;
+    float maxLength = restLengths[c].y;
+    
+    int i;
+    for (i = 0; i < numEdges; ++i)
+    {
+        int edge = first + i;
+
+        float4 p1 = positions[particleIndices[edge]];
+        float4 p2 = positions[particleIndices[edge+1]];
+        float4 diff = p1 - p2;
+
+        float dist = length(diff);
+        ni[edge] = float4(diff/(dist + EPSILON));
+    }
+
+    // calculate ai, bi and ci
+    for (i = 0; i < numEdges; ++i)
+    {
+        int edge = first + i;
+
+        float w_i_ = invMasses[particleIndices[edge]];
+        float w__i = invMasses[particleIndices[edge+1]];
+
+        float4 ni__ = FLOAT4_ZERO;
+        if (i > 0) ni__ = ni[edge - 1];
+        
+        float4 n__i = FLOAT4_ZERO;
+        if (i < numEdges - 1) n__i = ni[edge + 1];
+
+        diagonals[edge] = float3(-w_i_ * dot(ni[edge], ni__), // ai
+                                  w_i_ + w__i,             // bi
+                                 -w__i * dot(ni[edge], n__i));// ci
+    }
+
+    // solve step #1, forward sweep:
+    // reuse diagonals.xy to store sweep results ci_ and di_:
+    for (i = 0; i < numEdges; ++i)
+    {
+        int edge = first + i;
+        float4 p1 = positions[particleIndices[edge]];
+        float4 p2 = positions[particleIndices[edge + 1]];
+
+        float cip_ = 0;
+        float dip_ = 0;
+
+        if (i > 0)
+        {
+            cip_ = diagonals[edge - 1].x;
+            dip_ = diagonals[edge - 1].y;
+        }
+
+        float3 d = diagonals[edge];
+        float den = d.y - cip_ * d.x;
+
+        if (abs(den) > EPSILON)
+        {
+            float dist = distance(p1, p2);
+            float correction = 0;
+
+            if (dist >= maxLength)
+                correction = dist - maxLength;
+            else if (dist <= minLength)
+                correction = dist - minLength;
+
+            d.xy = float2(d.z / den, (correction - dip_ * d.x) / den);
+
+        }
+        else
+            d.xy = float2(0,0);
+
+        diagonals[edge] = d;
+    }
+
+    // solve step #2, backward sweep. reuse diagonals.z to store solution xi:
+    for (i = numEdges - 1; i >= 0; --i)
+    {
+        int edge = first + i;
+
+        float xi_ = (i < numEdges - 1) ? diagonals[edge + 1].z : 0;
+
+        float3 d = diagonals[edge];
+        d.z = d.y - d.x * xi_;
+        diagonals[edge] = d;
+    }
+
+    // calculate deltas:
+    for (i = 0; i < numIndices[c]; ++i)
+    {
+        int index = first + i;
+
+        float4 ni__ = FLOAT4_ZERO;
+        float xi_ = 0;
+
+        if (i > 0)
+        {
+            ni__ = ni[index - 1];
+            xi_ = diagonals[index - 1].z;
+        }
+
+        float4 n_i_ = FLOAT4_ZERO;
+        float nxi = 0;
+
+        if (i < numIndices[c] - 1) 
+        {
+            n_i_ = ni[index];
+            nxi = diagonals[index].z;
+        }
+
+        int p = particleIndices[index];
+
+        AddPositionDelta(p, invMasses[p] * (ni__ * xi_ - n_i_ * nxi));
+    }
+}
+
+[numthreads(128, 1, 1)]
+void Apply (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+   
+    if (i >= activeConstraintCount) return;
+
+    int first = firstIndex[i];
+    int last = first + numIndices[i];
+
+    for (int k = first; k < last; ++k)
+        ApplyPositionDelta(positions, particleIndices[k], sorFactor);
+}

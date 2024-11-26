@@ -1,0 +1,212 @@
+﻿#include "ColliderDefinitions.cginc"
+#include "ContactHandling.cginc"
+#include "Transform.cginc"
+#include "Simplex.cginc"
+#include "Bounds.cginc"
+#include "SolverParameters.cginc"
+#include "Optimization.cginc"
+
+#pragma kernel GenerateContacts
+
+struct DistanceFieldHeader 
+{
+    int firstNode;
+    int nodeCount;
+};
+
+struct DFNode
+{
+    float4 distancesA;
+    float4 distancesB;
+    float4 center;
+    int firstChild;
+
+    // add 12 bytes of padding to ensure correct memory alignment:
+    int pad0;
+    int pad1;
+    int pad2;
+
+    float4 GetNormalizedPos(float4 position)
+    {
+        float4 corner = center - float4(center[3],center[3],center[3],center[3]);
+        return (position - corner) / (center[3] * 2);
+    }
+
+    float4 SampleWithGradient(float4 position)
+    {
+        float4 nPos = GetNormalizedPos(position);
+
+        // trilinear interpolation of distance:
+        float4 x = distancesA + (distancesB - distancesA) * nPos[0];
+        float2 y = x.xy + (x.zw - x.xy) * nPos[1];
+        float dist = y[0] + (y[1] - y[0]) * nPos[2];
+
+        // gradient estimation:
+        // x == 0
+        float2 a = distancesA.xy + (distancesA.zw - distancesA.xy) * nPos[1];
+        float x0 = a[0] + (a[1] - a[0]) * nPos[2];
+
+        // x == 1
+        a = distancesB.xy + (distancesB.zw - distancesB.xy) * nPos[1];
+        float x1 = a[0] + (a[1] - a[0]) * nPos[2];
+
+        // y == 0
+        float y0 = x[0] + (x[1] - x[0]) * nPos[2];
+
+        // y == 1
+        float y1 = x[2] + (x[3] - x[2]) * nPos[2];
+
+        return float4(x1 - x0, y1 - y0, y[1] - y[0], dist);
+
+    }
+
+    int GetOctant(float4 position)
+    {
+        int index = 0;
+        if (position[0] > center[0]) index |= 4;
+        if (position[1] > center[1]) index |= 2;
+        if (position[2] > center[2]) index |= 1;
+        return index;
+    }
+};
+
+StructuredBuffer<float4> positions;
+StructuredBuffer<quaternion> orientations;
+StructuredBuffer<float4> principalRadii;
+StructuredBuffer<float4> velocities;
+
+StructuredBuffer<int> simplices;
+
+StructuredBuffer<transform> transforms;
+StructuredBuffer<shape> shapes;
+
+// distance field data:
+StructuredBuffer<DistanceFieldHeader> distanceFieldHeaders;
+StructuredBuffer<DFNode> dfNodes;
+
+StructuredBuffer<uint2> contactPairs;
+StructuredBuffer<int> contactOffsetsPerType;
+
+RWStructuredBuffer<contact> contacts;
+RWStructuredBuffer<uint> dispatchBuffer;
+
+StructuredBuffer<transform> worldToSolver;
+
+uint maxContacts;
+float deltaTime;
+
+struct DistanceField : IDistanceFunction
+{
+    shape s;
+    transform colliderToSolver;
+    
+    StructuredBuffer<DistanceFieldHeader> distanceFieldHeaders;
+    StructuredBuffer<DFNode> dfNodes;
+
+    float4 DFTraverse(float4 particlePosition,
+                    in DistanceFieldHeader header)
+    {
+        int stack[12]; 
+        int stackTop = 0;
+
+        stack[stackTop++] = 0;
+
+        while (stackTop > 0)
+        {
+            // pop node index from the stack:
+            int nodeIndex = stack[--stackTop];
+            DFNode node = dfNodes[header.firstNode + nodeIndex];
+
+            // if the child node exists, recurse down the df octree:
+            if (node.firstChild >= 0)
+                stack[stackTop++] = node.firstChild + node.GetOctant(particlePosition);
+            else
+                return node.SampleWithGradient(particlePosition);
+        }
+        return FLOAT4_ZERO;
+    }
+    
+    void Evaluate(in float4 pos, in float4 radii, in quaternion orientation, inout SurfacePoint projectedPoint)
+    {
+        float4 pnt = colliderToSolver.InverseTransformPoint(pos);
+
+        if (s.is2D())
+            pnt[2] = 0;
+            
+        float4 sample = DFTraverse(pnt, distanceFieldHeaders[s.dataIndex]);
+        float4 normal = float4(normalize(sample.xyz), 0);
+
+        projectedPoint.pos = colliderToSolver.TransformPoint(pnt - normal * (sample[3] - s.contactOffset));
+        projectedPoint.normal = colliderToSolver.TransformDirection(normal);
+        projectedPoint.bary = float4(1,0,0,0);
+    }
+};
+
+[numthreads(128, 1, 1)]
+void GenerateContacts (uint3 id : SV_DispatchThreadID) 
+{
+    uint i = id.x;
+
+    // entry #11 in the dispatch buffer is the amount of pairs for the first shape type.
+    if (i >= dispatchBuffer[11 + 4 * SDF_SHAPE]) return; 
+
+    int firstPair = contactOffsetsPerType[SDF_SHAPE];
+    int simplexIndex = contactPairs[firstPair + i].x;
+    int colliderIndex = contactPairs[firstPair + i].y;
+    shape s = shapes[colliderIndex];
+
+    if (s.dataIndex < 0) return;
+
+    DistanceFieldHeader header = distanceFieldHeaders[s.dataIndex];
+    
+    DistanceField dfShape;
+    dfShape.colliderToSolver = worldToSolver[0].Multiply(transforms[colliderIndex]);
+    dfShape.s = s;
+    dfShape.distanceFieldHeaders = distanceFieldHeaders;
+    dfShape.dfNodes = dfNodes;
+
+    int simplexSize;
+    int simplexStart = GetSimplexStartAndSize(simplexIndex, simplexSize);
+
+    float4 simplexBary = BarycenterForSimplexOfSize(simplexSize);
+    float4 simplexPoint;
+
+    SurfacePoint colliderPoint = Optimize(dfShape, positions, orientations, principalRadii,
+                                          simplices, simplexStart, simplexSize, simplexBary, simplexPoint, surfaceCollisionIterations, surfaceCollisionTolerance);
+
+    float4 velocity = FLOAT4_ZERO;
+    float simplexRadius = 0;
+    for (int j = 0; j < simplexSize; ++j)
+    {
+        int particleIndex = simplices[simplexStart + j];
+        simplexRadius += principalRadii[particleIndex].x * simplexBary[j];
+        velocity += velocities[particleIndex] * simplexBary[j];
+    }
+
+    /*float4 rbVelocity = float4.zero;
+    if (rigidbodyIndex >= 0)
+        rbVelocity = BurstMath.GetRigidbodyVelocityAtPoint(rigidbodyIndex, colliderPoint.point, rigidbodies, solverToWorld);*/
+        
+    float dAB = dot(simplexPoint - colliderPoint.pos, colliderPoint.normal);
+    float vel = dot(velocity     /*- rbVelocity*/,    colliderPoint.normal);
+
+    //if (vel * deltaTime + dAB <= simplexRadius + s.contactOffset + collisionMargin)
+    {
+        uint count = contacts.IncrementCounter();
+        if (count < maxContacts)
+        {
+            contact c = (contact)0;
+           
+            c.pointB = colliderPoint.pos;
+            c.normal = colliderPoint.normal * dfShape.s.isInverted();
+            c.pointA = simplexBary;
+            c.bodyA = simplexIndex;
+            c.bodyB = colliderIndex;
+
+            contacts[count] = c;
+            
+            InterlockedMax(dispatchBuffer[0],(count + 1) / 128 + 1);
+            InterlockedMax(dispatchBuffer[3], count + 1);
+        }
+    }
+}
