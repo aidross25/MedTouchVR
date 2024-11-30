@@ -21,5 +21,7 @@ public class ButtonHandler : MonoBehaviour, IPointerEnterHandler, IPointerExitHa
         transform.localScale = originalScale;
     }
 
-    
+    void OnDisable() {
+        transform.localScale = originalScale;
+    }
 }
