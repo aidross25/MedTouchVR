@@ -19,6 +19,17 @@ using System;
 
     The threadPartition is created by starting a cylinder at one joint, and ending at the next. (n-1 thread partitions for n joints)
 
+
+
+
+
+    GENERAL PROGRAM FLOW:
+    OnDeviceStateChanged (called by Unity's internal Update function) -> QueueMainThreadAction -> CalculateForceOnMainThread -> CreateJointAtCollisionPoint
+
+    OnButtonUp (subscribed from versegripcontroller) -> DeleteAllthreadPartitionssAndJoints
+
+    OnButtonDown (subscribed from versegripcontroller) ->
+
  Caleb Pope, Capstone Intern of MIE 01/07/2025
 */
 
@@ -67,19 +78,19 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
 
 
         //Asset Model
-        public GameObject ballPrefab;
+        public GameObject jointPrefab;
 
         //Asset Size
-        public float ballSize = 0.1f;
+        public float jointSize = 0.1f;
 
         //Delay scalar (minimum time which must elapse before next joint may be created)
         public float creationInterval = 1f;
 
         //Time since last joint was created (used with creationInterval to prevent overwhelmingly rapid joint creation)
-        private float _lastBallCreationTime = 0f;
+        private float _lastJointCreationTime = 0f;
 
         //Last joint created (where the beginning of the next threadPartition will be)
-        private GameObject lastBall = null;
+        private GameObject lastJoint = null;
 
 
 
@@ -97,10 +108,10 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
 
         //Thickness Scalar
         [Range(0.001f, 1f)]
-        public float cylinderDiameter = 0.05f;
+        public float threadPartitionsDiameter = 0.05f;
 
         //Color
-        public Color cylinderColor = Color.white;
+        public Color threadPartitionsColor = Color.white;
 
 
 
@@ -139,12 +150,12 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
 
 
         //List of existing joints
-        private List<GameObject> _balls = new List<GameObject>();
+        private List<GameObject> _joints = new List<GameObject>();
 
         //List of existing threadPartitions
-        private List<GameObject> _cylinders = new List<GameObject>();
+        private List<GameObject> _threadPartitionss = new List<GameObject>();
 
-        //List of actions the main thread should handle
+        //List of actions (delegates or UnityEvents) the main thread should handle
         private Queue<Action> _mainThreadActions = new Queue<Action>();
 
 
@@ -188,9 +199,12 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
         //"Subscribes to the DeviceStateChanged event." -https://docs.haply.co/inverseSDK/2.2.0/unity/tutorials/basic-force-feedback
         private void OnEnable()
         {
+            //We use "+=" as a way to signal that we're "adding" the RHS as a delegate (another thing to do when the LHS gets called)
             inverse3.DeviceStateChanged += OnDeviceStateChanged;
 
-            //also subscribe from versegrip button events
+            //also subscribe to versegrip button events
+            //This has different syntax because the inverse3 was called using C#'s Event/Delegate functionality, but this is called through a UnityEvent.
+            //The difference is that there are more functionalities available in the inspector for UnityEvent (easier function binding)
             versegripController.ButtonDown.AddListener(OnButtonDown);
             versegripController.ButtonUp.AddListener(OnButtonUp);
         }
@@ -198,6 +212,8 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
         //"Unsubscribes from the DeviceStateChanged event." - https://docs.haply.co/inverseSDK/2.2.0/unity/tutorials/basic-force-feedback
         private void OnDisable()
         {
+
+            //Remove OnDeviceStateChanged from DeviceStateChanged Event
             inverse3.DeviceStateChanged -= OnDeviceStateChanged;
             inverse3.Release();
 
@@ -212,36 +228,66 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
     #region Handle Force
 
         //The one and only force calculating function lol
+        //Calculates force based on whether a ray  (which is the need for raycast)
         private void CalculateForceOnMainThread(Vector3 cursorPosition, Vector3 cursorVelocity, Vector3 cursorRadius, MeshCollider meshCollider)
         {
-            //Initialize Current Force
+            //Initialize Current Force with 0. This will be changed throughout the gameloop
             var force = Vector3.zero;
 
-            // Adjust raycast to prevent clipping
+            //Initialize a point where the collision ray was hit. 
             RaycastHit hitInfo;
 
 
+            //Initialize a ray with which we will calculate collision. 
+            //Start it at the cursor, and point it down.
             Ray ray = new Ray(cursorPosition, Vector3.down);
+
+
+            //if our ray (ray), extending all the way to infinity (Mathf.Infinity) hits something, then it will return the RaycastHit object to hitInfo
             if (_meshCollider.Raycast(ray, out hitInfo, Mathf.Infinity))
             {
+
+                //Create a vector on the point of the meshCollider where our ray hit
                 Vector3 closestPoint = hitInfo.point;
+
+                //Create a vector which is the normal (orthogonal vector) of the point on the mesh collider we hit.
                 Vector3 normal = hitInfo.normal;
 
-                // Adjust distance and penetration for better collision feedback
+
+
+
+                //Calculate the distance between the middle of the cursor and the point of the meshCollider where our ray hit
                 float distance = Vector3.Distance(cursorPosition, closestPoint);
+
+                //Calculates how deep we are in the patient (if at all). Accounts for size of cursor sphere. 
+                //cursorRadius.x is the radius of the sphere (we can use x because we know it's a uniform sphere). 
+                // penetration > 0 means we're touching the sphere (or the closestPoint is in the sphere) because distance is closer to the center than the surface of our cursor.
+                // penetration <= 0 means we're not touching the sphere because the distance to the center of the sphere (from the closestPoint) is further than the surface of the sphere.  
                 float penetration = cursorRadius.x - distance;
 
-                // Only apply force if there is penetration
+                // As stated above, if penetration > 0, we are in the patient, and have to apply a force. 
+                // If we're outside the patient, we don't have to apply a force
                 if (penetration > 0)
                 {
+                    //The deeper, more orthogonal and stiffness of the penetration positively correlates to the force applied
                     force = normal * penetration * stiffness;
+
+                    //This mimics friction
+                    //The velocity and damping negatively correlate to the force applied (only subtracted from the original force)
                     force -= cursorVelocity * damping;
 
-                    // Prevent rapid ball creation and control spacing
-                    if (isPressing && Time.time - _lastBallCreationTime >= creationInterval)
+
+
+
+                    // If we're pressing (from versegrip OnButtonDown UnityEvent), and the time since we last created a joint is
+                    //greater than or equal to our minumum elapsed time to create a joint...
+                    if (isPressing && Time.time - _lastJointCreationTime >= creationInterval)
                     {
-                        CreateBallAtCollisionPoint(closestPoint);
-                        _lastBallCreationTime = Time.time;
+                        //Create a joint on the mesh where we hit
+                        CreateJointAtCollisionPoint(closestPoint);
+
+                        //set the last created time to now
+                        _lastJointCreationTime = Time.time;
                     }
                 }
                 else
@@ -251,31 +297,50 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
                 }
             }
 
+            //assign our global current force variable to our calculated force            
             _calculatedForce = force;
+
+            //this is a safety feature. It signals whether or not we have calculated the force this frame. 
+            //Because we use parallel processing, we need to make sure we're not running into any race conditions
             _forceCalculated = true;
         }
     #endregion
 
     #region manage threadPartition and joints
-        private void CreateBallAtCollisionPoint(Vector3 collisionPoint)
-        {
-            if (ballPrefab != null)
-            {
-                GameObject ball = Instantiate(ballPrefab, collisionPoint, Quaternion.identity);
-                ball.transform.localScale = Vector3.one * ballSize;
-                _balls.Add(ball);
 
-                // Only create a cylinder if this is not the first ball in the current session
-                if (lastBall != null)
+        //Creates a joint at the collision point (reffered to as "closestPoint" in the CalculateForceOnMainThread function)
+        private void CreateJointAtCollisionPoint(Vector3 collisionPoint)
+        {
+            //check to make sure we have an asset for the joint. 
+            if (jointPrefab != null)
+            {
+                //create a joint with an asset of jointPrefab, at collisionPoint, and a rotation of Quaternion.identity (no rotation)
+                GameObject joint = Instantiate(jointPrefab, collisionPoint, Quaternion.identity);
+
+                //scale the joint to joint size (but multiply by a vector so it's in the right format)
+                joint.transform.localScale = Vector3.one * jointSize;
+
+                //put in data structure (so we can delete all joints if we double-click)
+                _joints.Add(joint);
+
+
+
+
+
+                // Only create a threadPartition if this is not the first joint
+                if (lastJoint != null)
                 {
-                    CreateCylinderBetweenBalls(lastBall, ball);
+                    //call that function
+                    CreatethreadPartitionsBetweenJoints(lastJoint, joint);
                 }
 
-                lastBall = ball; // Update the last ball for the current session
+                // Update the last joint to know where to make the next threadPartition
+                lastJoint = joint; 
             }
+            //if we don't have an asset for the joint throw a warning
             else
             {
-                Debug.LogWarning("Ball Prefab is not assigned in the inspector.");
+                Debug.LogWarning("Joint Prefab is not assigned in the inspector.");
             }
         }
 
@@ -283,45 +348,90 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
 
 
 
-
-        private void CreateCylinderBetweenBalls(GameObject startBall, GameObject endBall)
+        //Creates threadpartitions. Called in CreateJointAtCollisionPoint
+        //need the start and end joint to know where to make the thread partition
+        private void CreatethreadPartitionsBetweenJoints(GameObject startJoint, GameObject endJoint)
         {
-            Vector3 start = startBall.transform.position;
-            Vector3 end = endBall.transform.position;
+            //get the positions of the joints
+            Vector3 start = startJoint.transform.position;
+            Vector3 end = endJoint.transform.position;
 
-            GameObject cylinder = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-            cylinder.transform.SetParent(null); // Detach from parent to avoid inheriting transforms
-            cylinder.transform.position = (start + end) / 2f;
-            cylinder.transform.up = (end - start).normalized; // Explicitly set the cylinder's direction
-            cylinder.transform.localScale = new Vector3(
-                cylinderDiameter,
-                Vector3.Distance(start, end) / 2f,
-                cylinderDiameter);
+            //get the distance between start and end joints
+            float vectorDistance = Vector3.Distance(start, end);
 
-            Renderer renderer = cylinder.GetComponent<Renderer>();
+            //Make a new threadPartition (which is just a cylinder)
+            GameObject threadPartitions = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+
+            //Make sure we don't inherit anything by mistake
+            threadPartitions.transform.SetParent(null);
+
+            //Start the threadPartition in the middle of the two joints
+            threadPartitions.transform.position = (start + end) / 2f;
+
+            //Set the rotation of the threadPartition to be the direction of end to start (or start to end, doesn't matter)
+            //Normalize it because we don't care about the magnitude of the vector
+            threadPartitions.transform.up = (end - start).normalized;
+
+
+
+
+
+
+            //create the dimensions of the threadPartition
+            threadPartitions.transform.localScale = new Vector3(
+                //x-radius is how thick we want the threadPartition
+                threadPartitionsDiameter,
+
+                //height (y-RADIUS) of threadPartition (which is the distance between start and end divided by 2))
+                vectorDistance / 2f,
+
+                //z-radius is how thick we want the threadPartition
+                threadPartitionsDiameter);
+
+
+
+
+
+
+
+            //get the renderer of the threadPartition
+            Renderer renderer = threadPartitions.GetComponent<Renderer>();
+
+            //make sure we don't throw and error my checking for null reference
             if (renderer != null)
             {
-                renderer.material.color = cylinderColor;
+                //color the threadPartition
+                renderer.material.color = threadPartitionsColor;
             }
 
-            _cylinders.Add(cylinder);
+            //put in data structure (so we can delete them all if we need)
+            _threadPartitionss.Add(threadPartitions);
         }
 
 
 
-        private void DeleteAllCylindersAndBalls()
+        //Get rid of joints and threadPartitions
+        //Called in OnButtonDown (subscribed to versegrip button down UnityEvent)
+        private void DeleteAllthreadPartitionssAndJoints()
         {
-            foreach (var cylinder in _cylinders)
+            //simple for every threadPartition
+            foreach (var threadPartitions in _threadPartitionss)
             {
-                Destroy(cylinder);
+                //destroy me
+                Destroy(threadPartitions);
             }
-            _cylinders.Clear();
+            //flash the threadPartition data structure
+            _threadPartitionss.Clear();
 
-            foreach (var ball in _balls)
+
+
+            //now do the same thing but with joints VVVVVVV
+
+            foreach (var joint in _joints)
             {
-                Destroy(ball);
+                Destroy(joint);
             }
-            _balls.Clear();
+            _joints.Clear();
         }
 
 
@@ -331,31 +441,46 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
 
     #region Manage Versegrip button
 
+    //subscribed to versegrip button down unityEvent
+    //Make sure to get the versegrip and button
     private void OnButtonDown(VerseGrip grip, VerseGripButton button)
         {
-            // Detect if this is a double-click event
+            //if time since last clicked is <= minumum time to be considered a double click..
             if (Time.time - lastButtonPressTime <= doubleClickThreshold)
             {
-                // Double-click detected, clear all objects
-                DeleteAllCylindersAndBalls();
+                // We have a double click!
+                //clear threadPartitions and Joints
+                DeleteAllthreadPartitionssAndJoints();
             }
             else
             {
-                lastButtonPressTime = Time.time; // Update the last button press time
+                //Update last button pressed time
+                lastButtonPressTime = Time.time; 
             }
 
+            //if we weren't pressing
             if (!isPressing)
             {
+                //now we are
                 isPressing = true;
-                lastBall = null; // Reset last ball when starting a new session
+
+                //we only want to create a thread partition when we're pressing down. 
+                //if we ALWAYS keep the last joint, when we suture on the left side of the arm, 
+                //then pick up the suture then start a new partition on the right side of the arm,
+                //then a threadPartition will form  inside the arm
+                lastJoint = null; 
             }
         }
 
+        //subscribed to versegrip button up.
+        //just like OnButtonDown, we need to get the versegrip object and button in case. 
         private void OnButtonUp(VerseGrip grip, VerseGripButton button)
         {
+            //if we were pressing
             if (isPressing)
             {
-                isPressing = false; // Stop creating balls and cylinders
+                //we ain't no more
+                isPressing = false;
             }
         }
 
@@ -367,37 +492,52 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
     #region Updating Functions
 
         //Main update function. 
+        //TLDR, we need to make sure some actions are running on the main thread. so things get a little complicated. 
         private void Update()
         {
+            //while we have something the main thread should handle
             while (_mainThreadActions.Count > 0)
             {
+                //declare an action
                 Action action;
+
+                //lock the thread for race condition security
                 lock (_mainThreadActions)
                 {
                     action = _mainThreadActions.Dequeue();
                 }
+                //do that action
                 action.Invoke();
             }
 
+            //if we have calculated the current force
             if (_forceCalculated)
             {
+                //tell the inverse to execute the force
                 inverse3.CursorSetLocalForce(_calculatedForce);
+
+                //say we no longer have calculated the (next) current force
                 _forceCalculated = false;
             }
         }
 
 
-        
+        //when Inverse3 changes
         private void OnDeviceStateChanged(Inverse3 device)
         {
+            //this basically says that you're going to hand off an action (calculating force) to QueueMainThreadAction
+            //its a lambda
             QueueMainThreadAction(() =>
             {
+                //calculate force
                 CalculateForceOnMainThread(device.CursorLocalPosition, device.CursorLocalVelocity, _cursorRadius, _meshCollider);
             });
         }
 
+        //Function that puts an action into the main thread.
         private void QueueMainThreadAction(Action action)
         {
+            //assure no race conditions
             lock (_mainThreadActions)
             {
                 _mainThreadActions.Enqueue(action);
