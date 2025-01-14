@@ -108,10 +108,10 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
 
         //Thickness Scalar
         [Range(0.001f, 1f)]
-        public float threadPartitionsDiameter = 0.05f;
+        public float threadPartitionDiameter = 0.05f;
 
         //Color
-        public Color threadPartitionsColor = Color.white;
+        public Color threadPartitionColor = Color.white;
 
 
 
@@ -153,7 +153,7 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
         private List<GameObject> _joints = new List<GameObject>();
 
         //List of existing threadPartitions
-        private List<GameObject> _threadPartitionss = new List<GameObject>();
+        private List<GameObject> _threadPartitions = new List<GameObject>();
 
         //List of actions (delegates or UnityEvents) the main thread should handle
         private Queue<Action> _mainThreadActions = new Queue<Action>();
@@ -234,43 +234,91 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
             //Initialize Current Force with 0. This will be changed throughout the gameloop
             var force = Vector3.zero;
 
-            //Initialize a point where the collision ray was hit. 
-            RaycastHit hitInfo;
+            //Initialize a list of rays with which we will calculate collision. 
+            List<Ray> _rays = new List<Ray>();
 
 
-            //Initialize a ray with which we will calculate collision. 
-            //Start it at the cursor, and point it down.
-            Ray ray = new Ray(cursorPosition, Vector3.down);
+            //These nested for loops are a performance hog (duh)
+            //We'll have to brainstorm how to really tell if we're touching something without clipping
+            //for -1, 0 and 1 of X
+            for (int i = -1; i < 2; i++){
+                //for -1, 0 and 1 of Y
+                for(int j = -1; j < 2; j++){
+                    //for -1, 0 and 1 of Z
+                    for(int k = -1; k < 2; k++){
+                        //Start it at the cursor, and point it in all cardinal and ordinal directions.
+                        _rays.Add(new Ray(cursorPosition, new Vector3(i,j,k)));
+                    }
+                }
+            }
+
+
+            //Initialize a flag on whether a ray hit
+            int rayFound = 0;
+
+            //Closest Distance
+            float closestRayDistance = Mathf.Infinity;
+
+            //Initialize closest point where we hit a ray
+            Vector3 closestPoint = new Vector3(0,0,0);
+
+            //Initialize closest ray's normal
+            Vector3 closestNormal = new Vector3(0,0,0);
+
+            //Calculate each ray...
+            foreach (var ray in _rays)
+            {
+                //Initialize a point where the collision ray was hit. 
+                RaycastHit hitInfo;
+
+                //Shoot the ray and save if/where it hit on the mesh
+                if(_meshCollider.Raycast(ray, out hitInfo, Mathf.Infinity)){
+                    //Yes, a ray was found
+                    rayFound = 1;
+
+                    //Create a vector on the point of the meshCollider where our ray hit
+                    Vector3 closePoint = hitInfo.point;
+
+                    //Create a vector which is the normal (orthogonal vector) of the point on the mesh collider we hit.
+                    Vector3 normal = hitInfo.normal;
+
+                    //Calculate the distance between the middle of the cursor and the point of the meshCollider where our ray hit
+                    float distance = Vector3.Distance(cursorPosition, closePoint);
+
+                    //if this ray's distance is the smallest out of all of them...
+                    if(distance < closestRayDistance){
+                        //It's the new closest distance
+                        closestRayDistance = distance;
+
+                        //Update closestPoint to the closest ray
+                        closestPoint = closePoint;
+
+                        //Update closestNormal to the closest ray
+                        closestNormal = normal;
+                    }
+                }
+            }
+
+
+
+
 
 
             //if our ray (ray), extending all the way to infinity (Mathf.Infinity) hits something, then it will return the RaycastHit object to hitInfo
-            if (_meshCollider.Raycast(ray, out hitInfo, Mathf.Infinity))
+            if (rayFound == 1)
             {
-
-                //Create a vector on the point of the meshCollider where our ray hit
-                Vector3 closestPoint = hitInfo.point;
-
-                //Create a vector which is the normal (orthogonal vector) of the point on the mesh collider we hit.
-                Vector3 normal = hitInfo.normal;
-
-
-
-
-                //Calculate the distance between the middle of the cursor and the point of the meshCollider where our ray hit
-                float distance = Vector3.Distance(cursorPosition, closestPoint);
-
                 //Calculates how deep we are in the patient (if at all). Accounts for size of cursor sphere. 
                 //cursorRadius.x is the radius of the sphere (we can use x because we know it's a uniform sphere). 
                 // penetration > 0 means we're touching the sphere (or the closestPoint is in the sphere) because distance is closer to the center than the surface of our cursor.
                 // penetration <= 0 means we're not touching the sphere because the distance to the center of the sphere (from the closestPoint) is further than the surface of the sphere.  
-                float penetration = cursorRadius.x - distance;
+                float penetration = cursorRadius.x - closestRayDistance;
 
                 // As stated above, if penetration > 0, we are in the patient, and have to apply a force. 
                 // If we're outside the patient, we don't have to apply a force
                 if (penetration > 0)
                 {
                     //The deeper, more orthogonal and stiffness of the penetration positively correlates to the force applied
-                    force = normal * penetration * stiffness;
+                    force = closestNormal * penetration * stiffness;
 
                     //This mimics friction
                     //The velocity and damping negatively correlate to the force applied (only subtracted from the original force)
@@ -293,10 +341,10 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
                 else
                 {
                     // Apply a gentle repulsion to prevent clipping, without pushing the cursor too far
-                    force = normal * -0.1f; // Slight force to prevent penetration
+                    force = closestNormal * -0.1f; // Slight force to prevent penetration
                 }
+            
             }
-
             //assign our global current force variable to our calculated force            
             _calculatedForce = force;
 
@@ -306,7 +354,7 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
         }
     #endregion
 
-    #region manage threadPartition and joints
+    #region manage threadPartitions and joints
 
         //Creates a joint at the collision point (reffered to as "closestPoint" in the CalculateForceOnMainThread function)
         private void CreateJointAtCollisionPoint(Vector3 collisionPoint)
@@ -360,17 +408,17 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
             float vectorDistance = Vector3.Distance(start, end);
 
             //Make a new threadPartition (which is just a cylinder)
-            GameObject threadPartitions = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            GameObject threadPartition = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
 
             //Make sure we don't inherit anything by mistake
-            threadPartitions.transform.SetParent(null);
+            threadPartition.transform.SetParent(null);
 
             //Start the threadPartition in the middle of the two joints
-            threadPartitions.transform.position = (start + end) / 2f;
+            threadPartition.transform.position = (start + end) / 2f;
 
             //Set the rotation of the threadPartition to be the direction of end to start (or start to end, doesn't matter)
             //Normalize it because we don't care about the magnitude of the vector
-            threadPartitions.transform.up = (end - start).normalized;
+            threadPartition.transform.up = (end - start).normalized;
 
 
 
@@ -378,15 +426,15 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
 
 
             //create the dimensions of the threadPartition
-            threadPartitions.transform.localScale = new Vector3(
+            threadPartition.transform.localScale = new Vector3(
                 //x-radius is how thick we want the threadPartition
-                threadPartitionsDiameter,
+                threadPartitionDiameter,
 
                 //height (y-RADIUS) of threadPartition (which is the distance between start and end divided by 2))
                 vectorDistance / 2f,
 
                 //z-radius is how thick we want the threadPartition
-                threadPartitionsDiameter);
+                threadPartitionDiameter);
 
 
 
@@ -395,33 +443,33 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
 
 
             //get the renderer of the threadPartition
-            Renderer renderer = threadPartitions.GetComponent<Renderer>();
+            Renderer renderer = threadPartition.GetComponent<Renderer>();
 
             //make sure we don't throw and error my checking for null reference
             if (renderer != null)
             {
                 //color the threadPartition
-                renderer.material.color = threadPartitionsColor;
+                renderer.material.color = threadPartitionColor;
             }
 
             //put in data structure (so we can delete them all if we need)
-            _threadPartitionss.Add(threadPartitions);
+            _threadPartitions.Add(threadPartition);
         }
 
 
 
         //Get rid of joints and threadPartitions
         //Called in OnButtonDown (subscribed to versegrip button down UnityEvent)
-        private void DeleteAllthreadPartitionssAndJoints()
+        private void DeleteAllthreadPartitionsAndJoints()
         {
             //simple for every threadPartition
-            foreach (var threadPartitions in _threadPartitionss)
+            foreach (var threadPartition in _threadPartitions)
             {
                 //destroy me
-                Destroy(threadPartitions);
+                Destroy(threadPartition);
             }
             //flash the threadPartition data structure
-            _threadPartitionss.Clear();
+            _threadPartitions.Clear();
 
 
 
@@ -450,7 +498,7 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
             {
                 // We have a double click!
                 //clear threadPartitions and Joints
-                DeleteAllthreadPartitionssAndJoints();
+                DeleteAllthreadPartitionsAndJoints();
             }
             else
             {

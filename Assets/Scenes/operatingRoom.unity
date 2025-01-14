@@ -3592,9 +3592,9 @@ MonoBehaviour:
   inverse3: {fileID: 531438280}
   versegripController: {fileID: 531438278}
   stiffness: 300
-  damping: 1.04
-  ballPrefab: {fileID: 418033840}
-  ballSize: 0
-  creationInterval: 0.01
-  cylinderDiameter: 0.001
-  cylinderColor: {r: 0.6790178, g: 0.80981016, b: 0.9748427, a: 1}
+  damping: 1
+  jointPrefab: {fileID: 418033840}
+  jointSize: 0
+  creationInterval: 0.005
+  threadPartitionDiameter: 0.001
+  threadPartitionColor: {r: 0.27450982, g: 0.37647063, b: 0.48627454, a: 1}
