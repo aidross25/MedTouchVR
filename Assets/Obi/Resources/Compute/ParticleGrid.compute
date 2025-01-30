@@ -1,0 +1,600 @@
+﻿#include "GridUtils.cginc"
+#include "CollisionMaterial.cginc"
+#include "ColliderDefinitions.cginc"
+#include "ContactHandling.cginc"
+#include "SolverParameters.cginc"
+#include "Simplex.cginc"
+#include "Phases.cginc"
+#include "Bounds.cginc"
+#include "Simplex.cginc"
+
+#pragma kernel Clear
+#pragma kernel InsertSimplices
+#pragma kernel FindPopulatedLevels
+#pragma kernel SortSimplices
+#pragma kernel BuildFluidDispatch
+#pragma kernel SortFluidSimplices
+#pragma kernel BuildMortonIndices
+#pragma kernel MortonSort
+#pragma kernel FindFluidNeighborsInSameLevel
+#pragma kernel FindFluidNeighborsInUpperLevels
+#pragma kernel BuildContactList
+
+StructuredBuffer<aabb> solverBounds;
+StructuredBuffer<aabb> simplexBounds;
+StructuredBuffer<int> simplices;        // particle indices in each simplex.
+
+StructuredBuffer<float4> positions;
+StructuredBuffer<float4> restPositions;
+StructuredBuffer<float4> principalRadii;
+StructuredBuffer<float4> fluidMaterials;
+StructuredBuffer<float4> fluidInterface;
+StructuredBuffer<uint4> normals;
+
+StructuredBuffer<quaternion> orientations;
+StructuredBuffer<quaternion> restOrientations;
+
+StructuredBuffer<float4> velocities;
+StructuredBuffer<float> invMasses;
+StructuredBuffer<int> phases;
+StructuredBuffer<int> filters;
+
+StructuredBuffer<int4> R_cellCoords;     // for each item, its cell coordinates.
+StructuredBuffer<uint> R_offsetInCell;   // for each item, its offset within the cell.
+StructuredBuffer<uint> R_cellOffsets;    // start of each cell in the sorted item array.
+StructuredBuffer<uint> R_cellCounts;     // number of item in each cell.
+StructuredBuffer<uint> R_levelPopulation;
+
+RWStructuredBuffer<int4> cellCoords;     // for each item, its cell coordinates.
+RWStructuredBuffer<uint> offsetInCell;   // for each item, its offset within the cell.
+RWStructuredBuffer<uint> cellOffsets;    // start of each cell in the sorted item array.
+RWStructuredBuffer<uint> cellCounts;     // number of item in each cell.
+
+RWStructuredBuffer<int> cellHashToMortonIndex; 
+
+RWStructuredBuffer<int> mortonSortedCellHashes; 
+RWStructuredBuffer<int> sortedSimplexToFluid; // fluidSimplices
+RWStructuredBuffer<int> sortedFluidIndices;  
+RWStructuredBuffer<int> sortedSimplexIndices;      
+
+RWStructuredBuffer<float4> sortedPositions;
+RWStructuredBuffer<float4> sortedFluidMaterials;
+RWStructuredBuffer<float4> sortedFluidInterface;
+RWStructuredBuffer<float4> sortedPrincipalRadii;
+
+RWStructuredBuffer<uint> neighbors;
+RWStructuredBuffer<uint> neighborCounts;
+
+RWStructuredBuffer<contact> particleContacts;
+RWStructuredBuffer<uint2> contactPairs;
+
+RWStructuredBuffer<uint> fluidDispatchBuffer;
+RWStructuredBuffer<uint> dispatchBuffer;
+
+RWStructuredBuffer<float4> colors;
+
+uint maxContacts;
+uint maxNeighbors;
+uint fluidParticleCount;
+float deltaTime;    
+
+const uint groupWidth;
+const uint groupHeight;
+const uint stepIndex; 
+
+/**
+For each cell, calculate coords and morton. This only works if there’s no collisions, so use the coord of one random particle that maps to that cell:
+
+For each simplex:
+Determine cell coords (any particle in it will do) and hash, store in array per cell. Sort array by morton(coords), create array that maps from cell hash to morton index, then use as cellCounts[mortonIndex].
+
+This way we have sorted particles and cells, and can use for fluid surface. Win win!!
+*/
+
+[numthreads(128, 1, 1)]
+void Clear (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+
+    if (i >= maxCells)
+        return;
+
+    if (i == 0)
+    {
+        for (int l = 0; l <= GRID_LEVELS; ++l)
+            levelPopulation[l] = 0;
+    }
+
+    // clear all cell counts to zero, and cell offsets to invalid.
+    cellOffsets[i] = INVALID;
+    cellCounts[i] = 0;
+    mortonSortedCellHashes[i] = i;
+}
+
+[numthreads(128, 1, 1)]
+void InsertSimplices (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+    if (i >= pointCount + edgeCount + triangleCount) return;
+
+    // calculate simplex cell index:
+    int level = GridLevelForSize(simplexBounds[i].MaxAxisLength());
+    float cellSize = CellSizeOfLevel(level);
+    int4 cellCoord = int4(floor((simplexBounds[i].Center() - solverBounds[0].min_)/ cellSize).xyz,level);
+
+    // if the solver is 2D, project to the z = 0 cell.
+    if (mode == 1) cellCoord[2] = 0;
+
+    // insert simplex in cell:
+    uint cellIndex = GridHash(cellCoord);
+    cellCoords[i] = cellCoord;
+    InterlockedAdd(cellCounts[cellIndex],1,offsetInCell[i]);
+
+    // assign minimum morton code to cell 
+    // (there may be hash collisions mapping two coordinates to the same cell, that's why we use atomic minimum)
+    float mortonCellSize = solverBounds[0].MaxAxisLength() / 1024.0;
+    uint morton = EncodeMorton3(floor((simplexBounds[i].Center() - solverBounds[0].min_).xyz / mortonCellSize));
+    InterlockedMin(cellOffsets[cellIndex], morton);
+
+    // clear neighbor count:
+    neighborCounts[i] = 0;
+
+    // atomically increase this level's population by one:
+    InterlockedAdd(levelPopulation[1 + level],1);
+}
+
+[numthreads(128,1,1)]
+void MortonSort(uint3 id : SV_DispatchThreadID) 
+{
+    uint i = id.x;
+
+    uint hIndex = i & (groupWidth - 1);
+    uint indexLeft = hIndex + (groupHeight + 1) * (i / groupWidth);
+    uint rightStepSize = stepIndex == 0 ? groupHeight - 2 * hIndex : (groupHeight + 1) / 2;
+    uint indexRight = indexLeft + rightStepSize;
+
+    // Exit if out of bounds
+    if (indexRight >= maxCells) return;
+    
+    // get morton index for both cells: 
+    uint mortonL = cellOffsets[indexLeft];
+    uint mortonR = cellOffsets[indexRight];
+
+    // get cell counts:
+    uint simplexIndexL = cellCounts[indexLeft];
+    uint simplexIndexR = cellCounts[indexRight];
+
+    uint orderL = mortonSortedCellHashes[indexLeft];
+    uint orderR = mortonSortedCellHashes[indexRight];
+    
+    // Swap entries if order is incorrect
+    if (mortonL > mortonR)
+    {
+        cellCounts[indexLeft] = simplexIndexR;
+        cellCounts[indexRight] = simplexIndexL;
+
+        cellOffsets[indexLeft] = mortonR;
+        cellOffsets[indexRight] = mortonL;
+
+        mortonSortedCellHashes[indexLeft] = orderR;
+        mortonSortedCellHashes[indexRight] = orderL;
+    }
+}
+
+[numthreads(128,1,1)]
+void BuildMortonIndices(uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+    if (i >= maxCells) return; 
+    
+    // build map from cell hash to index in morton-sorted cell data.
+    int index = mortonSortedCellHashes[i];
+    cellHashToMortonIndex[index] = i;
+}
+
+[numthreads(128, 1, 1)]
+void SortSimplices (uint3 id : SV_DispatchThreadID) 
+{
+    uint i = id.x;
+    if (i >= pointCount + edgeCount + triangleCount) return;
+
+    // write simplex index to its index in the grid:
+    uint cellIndex = cellHashToMortonIndex[GridHash(R_cellCoords[i])]; 
+    uint gridIndex = R_cellOffsets[cellIndex] + R_offsetInCell[i];
+    sortedSimplexIndices[gridIndex] = i; // maps from index in grid to simplex index.
+
+    // flag fluid simplices with 1. we'll later do a prefix sum of this array 
+    // to get a compact list of grid-sorted fluid indices.
+    int size; 
+    int p = simplices[GetSimplexStartAndSize(i, size)];
+    sortedFluidIndices[gridIndex] = ((phases[p] & Fluid) != 0) ? 1:0;
+}
+
+[numthreads(1, 1, 1)]
+void BuildFluidDispatch (uint3 id : SV_DispatchThreadID) 
+{
+    // since we are using *exclusive* prefix sum,
+    // we must add the last entries of both buffers together to get total count of fluid simplices.
+
+    int lastEntry = pointCount + edgeCount + triangleCount - 1;
+    fluidDispatchBuffer[3] = sortedSimplexToFluid[lastEntry] + sortedFluidIndices[lastEntry];
+    fluidDispatchBuffer[0] = fluidDispatchBuffer[3] / 128 + 1;
+}
+
+[numthreads(128, 1, 1)]
+void SortFluidSimplices (uint3 id : SV_DispatchThreadID)  //rename to sort fluid data.
+{
+    // check all simplices. 
+    uint i = id.x;
+    if (i >= pointCount + edgeCount + triangleCount) return;
+
+    uint cellIndex = cellHashToMortonIndex[GridHash(R_cellCoords[i])];
+    uint gridIndex = R_cellOffsets[cellIndex] + R_offsetInCell[i];
+
+    // copy the data of first particle in each fluid simplex to sorted arrays 
+    // using prefix sum results: same as grid order, but contiguous. 
+    int size; 
+    int p = simplices[GetSimplexStartAndSize(i, size)];
+
+    if ((phases[p] & Fluid) != 0)
+    {
+        int fluidIndex = sortedSimplexToFluid[gridIndex];
+        sortedFluidIndices[fluidIndex] = i;
+
+        sortedPositions[fluidIndex] = positions[p];
+        sortedFluidMaterials[fluidIndex] = fluidMaterials[p];
+        sortedFluidInterface[fluidIndex] = fluidInterface[p];
+        sortedPrincipalRadii[fluidIndex] = principalRadii[p];
+    }
+    else
+        sortedSimplexToFluid[gridIndex] = -1;
+}
+
+int GetSimplexGroup(in int simplexStart,in int simplexSize, out int flags, out int category, out int mask, out bool restPositionsEnabled)
+{
+    flags = 0;
+    int group = 0;
+    category = 0;
+    mask = 0;
+    restPositionsEnabled = false;
+
+    for (int j = 0; j < simplexSize; ++j)
+    {
+        int particleIndex = simplices[simplexStart + j];
+        group = max(group, phases[particleIndex] & GroupMask);
+        flags |= phases[particleIndex] & ~GroupMask; // get flags from phase
+        category |= filters[particleIndex] & CategoryMask; // get category from filter
+        mask |= (filters[particleIndex] & MaskMask) >> 16; // get mask from filter
+        restPositionsEnabled = restPositionsEnabled || (restPositions[particleIndex].w > 0.5f);
+    }
+
+    return group;
+}
+
+struct simplexData
+{
+    int index;
+    int start;
+    int size;
+    int category;
+    int mask;
+    int flags;
+    int group;
+    bool restPosEnabled;
+};
+
+simplexData GetSimplexData(int indexInGrid)
+{
+    simplexData s;
+    s.index = sortedSimplexIndices[indexInGrid];
+    s.start = GetSimplexStartAndSize(s.index, s.size);
+    s.group = GetSimplexGroup(s.start, s.size, s.flags, s.category, s.mask, s.restPosEnabled);
+    return s;
+}
+
+void InteractionTest(simplexData a, simplexData b)
+{   
+    if ((a.flags & Fluid) == 0 || (b.flags & Fluid) == 0)
+    {
+        // immediately reject simplex pairs that share particles:
+        int j = 0;
+        for (int i = 0; i < a.size; ++i)
+            for (j = 0; j < b.size; ++j)
+                if (simplices[a.start + i] == simplices[b.start + j])
+                    return;
+
+        // if all particles are in the same group:
+        if (a.group == b.group)
+        {
+            // if none are self-colliding, reject the pair.
+            if ((a.flags & b.flags & SelfCollide) == 0)
+                return;
+        }
+        // category-based filtering:
+        else if ((a.mask & b.category) == 0 || (b.mask & a.category) == 0)
+            return;
+
+        // swap simplices (except for category) so that B is always the one-sided one.
+        int categoryA = a.category;
+        int categoryB = b.category;
+        if ((a.flags & OneSided) != 0 && categoryA < categoryB)
+        {
+            simplexData t = a;
+            a = b;
+            b = t; 
+        }
+
+        float4 simplexBary = BarycenterForSimplexOfSize(a.size);
+        float4 simplexPoint;
+
+        Simplex simplexShape;
+        simplexShape.simplexStart = b.start;
+        simplexShape.simplexSize = b.size;
+        simplexShape.simplices = simplices;
+        simplexShape.positions = restPositions;
+        float simplexRadiusA = 0; float simplexRadiusB = 0;
+
+        // skip the contact if there's self-intersection at rest:
+        if (a.group == b.group && (a.restPosEnabled || b.restPosEnabled))
+        {
+            SurfacePoint restPoint = Optimize(simplexShape, restPositions, restOrientations, principalRadii,
+                                             simplices, a.start, a.size, simplexBary, simplexPoint, 4, 0);
+                                             
+            for (j = 0; j < a.size; ++j)
+                simplexRadiusA += principalRadii[simplices[a.start + j]].x * simplexBary[j];
+
+            for (j = 0; j < b.size; ++j)
+                simplexRadiusB += principalRadii[simplices[b.start + j]].x * restPoint.bary[j];
+
+            // compare distance along contact normal with radius.
+            if (dot(simplexPoint - restPoint.pos, restPoint.normal) < simplexRadiusA + simplexRadiusB)
+                return;
+        }
+        
+        simplexBary = BarycenterForSimplexOfSize(a.size);
+        simplexShape.positions = positions;
+
+        SurfacePoint surfacePoint = Optimize(simplexShape, positions, orientations, principalRadii,
+                                             simplices, a.start, a.size, simplexBary, simplexPoint);
+
+        simplexRadiusA = 0; simplexRadiusB = 0;
+        float4 velocityA = FLOAT4_ZERO, velocityB = FLOAT4_ZERO, normalB = FLOAT4_ZERO;
+        
+        for (j = 0; j < a.size; ++j)
+        {
+            int particleIndex = simplices[a.start + j];
+            simplexRadiusA += principalRadii[particleIndex].x * simplexBary[j];
+            velocityA += velocities[particleIndex] * simplexBary[j];
+        }
+
+        for (j = 0; j < b.size; ++j)
+        {
+            int particleIndex = simplices[b.start + j];
+            simplexRadiusB += principalRadii[particleIndex].x * surfacePoint.bary[j];
+            velocityB += velocities[particleIndex] * surfacePoint.bary[j];
+            normalB += asfloat(normals[particleIndex]) * surfacePoint.bary[j];
+        }
+
+        float dAB = dot(simplexPoint - surfacePoint.pos, surfacePoint.normal);
+        float vel = dot(velocityA    - velocityB,        surfacePoint.normal);
+
+        // check if the projected velocity along the contact normal will get us within collision distance.
+        if (vel * deltaTime + dAB <= simplexRadiusA + simplexRadiusB + collisionMargin)
+        {
+            // adapt collision normal for one-sided simplices:
+            if ((b.flags & OneSided) != 0 && categoryA < categoryB)
+                OneSidedNormal(normalB, surfacePoint.normal);
+
+            uint count = particleContacts.IncrementCounter();
+            if (count < maxContacts)
+            {
+                contact c = (contact)0;
+                
+                c.normal = surfacePoint.normal;
+                c.pointA = simplexBary;
+                c.pointB = surfacePoint.bary;
+                c.bodyA = a.index;
+                c.bodyB = b.index;
+
+                particleContacts[count] = c;
+                contactPairs[count] = uint2(c.bodyA,c.bodyB);
+                    
+                InterlockedMax(dispatchBuffer[0],(count + 1) / 128 + 1);
+                InterlockedMax(dispatchBuffer[3], count + 1);
+            }
+        }
+    }
+}
+
+[numthreads(128, 1, 1)]
+void BuildContactList (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+
+    if (i >= pointCount + edgeCount + triangleCount) return;
+       
+    // current cell:
+    int4 cellCoord = R_cellCoords[i];
+    uint cellIndex = cellHashToMortonIndex[GridHash(cellCoord)];
+    uint n = R_cellOffsets[cellIndex];
+    uint end = n + R_cellCounts[cellIndex]; 
+    uint indexInGrid = n + R_offsetInCell[i];
+
+    simplexData data1 = GetSimplexData(indexInGrid);
+    
+    // in current cell, only consider simplices that appear after this one:
+    for (++indexInGrid; indexInGrid < end; ++indexInGrid)
+        InteractionTest(data1,GetSimplexData(indexInGrid));
+    
+    // neighbour cells ahead of the current one in the same level:
+    for(int j = 0; j < 13; ++j)
+    {
+        // get first simplex in neighbor cell: 
+        cellIndex = cellHashToMortonIndex[GridHash(cellCoord + aheadCellNeighborhood[j])];
+        n = R_cellOffsets[cellIndex]; 
+        end = n + R_cellCounts[cellIndex]; 
+        
+        // iterate through all simplices in neighbor cell:
+        for (; n < end; ++n)
+            InteractionTest(data1,GetSimplexData(n));
+    }
+    
+    // higher grid levels:
+    for (uint m = 1; m <= R_levelPopulation[0]; ++m)
+    {
+        uint l = R_levelPopulation[m];
+        if (l <= (uint)cellCoord.w) continue;
+
+        int4 parentCellCoords = GetParentCellCoords(cellCoord, l);
+    
+        for (int j = 0; j < 27; ++j)
+        {
+            // get first simplex in neighbor cell: 
+            cellIndex = cellHashToMortonIndex[GridHash(parentCellCoords + cellNeighborhood[j])];
+            n = R_cellOffsets[cellIndex]; 
+            end = n + R_cellCounts[cellIndex]; 
+            
+            // iterate through all simplices in neighbor cell:
+            for (; n < end; ++n)
+                InteractionTest(data1,GetSimplexData(n));
+        }
+    }
+}
+
+[numthreads(128, 1, 1)]
+void FindFluidNeighborsInSameLevel (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+    if (i >= dispatchBuffer[3]) return;
+
+    // current cell:
+    int4 cellCoord = R_cellCoords[sortedFluidIndices[i]];
+    int4 neighborCoord, particleCoord;
+    uint cellIndex, n, end;
+
+    float4 d;
+    float interactionRadius, cellSize;
+    int fluidB, level;
+       
+    float4 posA = sortedPositions[i];
+    float radA = sortedFluidMaterials[i].x;
+
+    uint count = 0;
+
+    // neighbour cells in same level. We don't need atomics for this, 
+    // and we can guarantee that the neighbors for each particle will
+    // appear in sorted order.
+    for(int j = 0; j < 27; ++j)
+    {
+        // get cell start/end
+        neighborCoord = cellCoord + cellNeighborhood[j];
+        cellIndex = cellHashToMortonIndex[GridHash(neighborCoord)];
+        n = R_cellOffsets[cellIndex]; 
+        end = n + R_cellCounts[cellIndex]; 
+                
+        // iterate through all simplices in neighbor cell:
+        for (; n < end; ++n)
+        {
+            fluidB = sortedSimplexToFluid[n];
+            if (fluidB >= 0 && fluidB != (int)i)
+            { 
+                // due to hash collisions, two neighboring cells might map to the same
+                // hash bucket, and we'll add the same set of particles twice to the neighbors list.
+                // So we only consider particles that have the same spatial coordinates as the cell.
+                level = GridLevelForSize(sortedFluidMaterials[fluidB].x);
+                cellSize = CellSizeOfLevel(level);
+                particleCoord = int4(floor((sortedPositions[fluidB] - solverBounds[0].min_)/ cellSize).xyz,level);
+
+                if (any (particleCoord - neighborCoord))
+                    continue;
+
+                // calculate particle center distance:
+                d = posA - sortedPositions[fluidB]; d.w = 0;
+                interactionRadius = max(radA, sortedFluidMaterials[fluidB].x);
+                
+                if (dot(d,d) <= interactionRadius * interactionRadius && count < maxNeighbors)
+                    neighbors[maxNeighbors * i + (count++)] = fluidB; 
+            }
+        }
+    }
+
+    neighborCounts[i] = count;
+}
+
+[numthreads(128, 1, 1)]
+void FindFluidNeighborsInUpperLevels (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+    if (i >= dispatchBuffer[3]) return;
+       
+    int s = sortedFluidIndices[i];
+    
+    int4 cellCoord = R_cellCoords[s];
+    int4 parentCellCoords, neighborCoord, particleCoord;
+    uint cellIndex, n, end;
+
+    float4 d;
+    float interactionRadius, cellSize;
+    int fluidB, level;
+
+    float4 posA = sortedPositions[i];
+    float radA = sortedFluidMaterials[i].x;
+    
+    for (uint m = 1; m <= R_levelPopulation[0]; ++m)
+    {
+        uint l = R_levelPopulation[m];
+
+        // skip levels below this particle's level.
+        if (l <= (uint)cellCoord.w) continue; 
+
+        parentCellCoords = GetParentCellCoords(cellCoord, l);
+    
+        for (int j = 0; j < 27; ++j)
+        {
+            // get cell start/end
+            neighborCoord = parentCellCoords + cellNeighborhood[j];
+            cellIndex = cellHashToMortonIndex[GridHash(neighborCoord)];
+            n = R_cellOffsets[cellIndex]; 
+            end = n + R_cellCounts[cellIndex]; 
+            
+            // iterate through all simplices in neighbor cell:
+            for (; n < end; ++n)
+            {
+                fluidB = sortedSimplexToFluid[n];
+                if (fluidB >= 0)
+                {
+                    // due to hash collisions, two neighboring cells might map to the same
+                    // hash bucket, and we'll add the same set of particles twice to the neighbors list.
+                    // So we only consider particles that have the same spatial coordinates as the cell.
+                    level = GridLevelForSize(sortedFluidMaterials[fluidB].x);
+                    cellSize = CellSizeOfLevel(level);
+                    particleCoord = int4(floor((sortedPositions[fluidB] - solverBounds[0].min_)/ cellSize).xyz,level);
+
+                    if (any (particleCoord - neighborCoord))
+                        continue;
+
+                    // calculate particle center distance:
+                    d = posA - sortedPositions[fluidB]; d.w = 0;
+                    interactionRadius = max(radA, sortedFluidMaterials[fluidB].x);
+                    
+                    if (dot(d,d) <= interactionRadius * interactionRadius)
+                    {            
+                        uint entryA, entryB;
+                        InterlockedAdd(neighborCounts[i], 1, entryA);
+                        InterlockedAdd(neighborCounts[fluidB], 1, entryB);
+                        
+                        if (entryA < maxNeighbors && entryB < maxNeighbors)
+                        {
+                            neighbors[maxNeighbors * i + entryA] = fluidB; 
+                            neighbors[maxNeighbors * fluidB + entryB] = i;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // convert simplex index to start in indices array.
+    int o;
+    sortedFluidIndices[i] = simplices[GetSimplexStartAndSize(s, o)];
+}

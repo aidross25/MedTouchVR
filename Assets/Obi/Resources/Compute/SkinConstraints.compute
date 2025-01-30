@@ -1,0 +1,71 @@
+﻿#pragma kernel Project
+#pragma kernel Apply
+
+#include "MathUtils.cginc"
+#include "AtomicDeltas.cginc"
+
+StructuredBuffer<int> particleIndices;
+StructuredBuffer<float4> skinPoints;
+StructuredBuffer<float4> skinNormals;
+StructuredBuffer<float3> skinRadiiBackstop;
+StructuredBuffer<float> skinCompliance;
+RWStructuredBuffer<float> lambdas;
+
+RWStructuredBuffer<float4> positions;
+StructuredBuffer<float> invMasses;
+
+// Variables set from the CPU
+uint activeConstraintCount;
+float deltaTime;
+float sorFactor;
+
+[numthreads(128, 1, 1)]
+void Project (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+
+    if (i >= activeConstraintCount) return;
+
+    float radius = skinRadiiBackstop[i].x;
+    float collisionRadius = skinRadiiBackstop[i].y;
+    float backstopDistance = collisionRadius + skinRadiiBackstop[i].z;
+
+    float compliance = skinCompliance[i] / (deltaTime * deltaTime);
+    int p = particleIndices[i];
+
+    if (invMasses[p] > 0)
+    {
+        float4 toSkin = positions[p] - skinPoints[i];
+        float4 toBackstop = positions[p] - (skinPoints[i] - skinNormals[i] * backstopDistance);
+
+        // distance to skin and backstop sphere centers:
+        float d = length(toSkin);
+        float b = length(toBackstop);
+
+        // constrain particle within skin radius.
+        // ignore mass in the equations (use 1), as we don't want particle mass to interfere with skin compliance.
+        // We should be able to adjust skin properties and particle mass (for collisions) independently.
+        float constraint = max(0,d - radius);
+        float dlambda = (-constraint - compliance * lambdas[i]) / (1 + compliance); 
+        lambdas[i] += dlambda;
+        float4 skinCorrection = dlambda * toSkin / (d + EPSILON);
+
+        // constrain particle outside the backstop sphere (0 compliance):
+        constraint = min(0, b - collisionRadius);
+        float4 backstopCorrection = - constraint * toBackstop / (b + EPSILON);
+        
+        AddPositionDelta(p, skinCorrection + backstopCorrection);
+    }
+}
+
+[numthreads(128, 1, 1)]
+void Apply (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+   
+    if (i >= activeConstraintCount) return;
+
+    int p1 = particleIndices[i];
+
+    ApplyPositionDelta(positions, p1, sorFactor);
+}
