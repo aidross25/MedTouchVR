@@ -1,0 +1,192 @@
+﻿#include "ContactHandling.cginc"
+#include "ColliderDefinitions.cginc"
+#include "Rigidbody.cginc"
+#include "Simplex.cginc"
+#include "CollisionMaterial.cginc"
+#include "Integration.cginc"
+#include "AtomicDeltas.cginc"
+
+#pragma kernel Project
+#pragma kernel Apply
+
+StructuredBuffer<int> particleIndices;
+StructuredBuffer<int> simplices;
+StructuredBuffer<float> invMasses;
+StructuredBuffer<float> invRotationalMasses;
+StructuredBuffer<float4> positions;
+StructuredBuffer<quaternion> orientations;
+StructuredBuffer<float4> prevPositions;
+StructuredBuffer<quaternion> prevOrientations;
+StructuredBuffer<float4> principalRadii;
+
+StructuredBuffer<transform> transforms;
+StructuredBuffer<shape> shapes;
+
+RWStructuredBuffer<float4> RW_positions;
+RWStructuredBuffer<quaternion> RW_orientations;
+
+RWStructuredBuffer<contact> contacts;
+RWStructuredBuffer<contactMasses> effectiveMasses;
+StructuredBuffer<uint> dispatchBuffer;
+
+StructuredBuffer<transform> solverToWorld;
+StructuredBuffer<inertialFrame> inertialSolverFrame;
+
+// Variables set from the CPU
+uint particleCount;
+float substepTime;
+float stepTime;
+float sorFactor;
+
+[numthreads(128, 1, 1)]
+void Project (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+
+    if (i >= dispatchBuffer[3]) return;
+
+    // Skip contacts involving triggers:
+    if (shapes[contacts[i].bodyB].isTrigger())
+        return;
+
+    int simplexSize;
+    int simplexStart = GetSimplexStartAndSize(contacts[i].bodyA, simplexSize);
+    int colliderIndex = contacts[i].bodyB;
+
+    int rigidbodyIndex = shapes[colliderIndex].rigidbodyIndex;
+
+    // Combine collision materials (use material from first particle in simplex)
+    collisionMaterial material = CombineCollisionMaterials(collisionMaterialIndices[simplices[simplexStart]], shapes[colliderIndex].materialIndex);
+
+    // Calculate relative velocity:
+    float4 rA = float4(0,0,0,0), rB = float4(0,0,0,0);
+
+    float4 prevPositionA = float4(0,0,0,0);
+    float4 linearVelocityA = float4(0,0,0,0);
+    float4 angularVelocityA = float4(0,0,0,0);
+    float invRotationalMassA = 0;
+    quaternion orientationA = quaternion(0, 0, 0, 0);
+    float simplexRadiusA = 0;
+
+    int j = 0;
+    for (j = 0; j < simplexSize; ++j)
+    {
+        int particleIndex = simplices[simplexStart + j];
+        prevPositionA    += prevPositions[particleIndex] * contacts[i].pointA[j];
+        linearVelocityA  += DifferentiateLinear(positions[particleIndex], prevPositions[particleIndex], substepTime) * contacts[i].pointA[j];
+        angularVelocityA += DifferentiateAngular(orientations[particleIndex], prevOrientations[particleIndex], substepTime) * contacts[i].pointA[j];
+        invRotationalMassA += invRotationalMasses[particleIndex] * contacts[i].pointA[j];
+        orientationA += orientations[particleIndex] * contacts[i].pointA[j];
+        simplexRadiusA += EllipsoidRadius(contacts[i].normal, prevOrientations[particleIndex], principalRadii[particleIndex].xyz) * contacts[i].pointA[j];
+    }
+
+    float4 relativeVelocity = linearVelocityA;
+
+    // Add particle angular velocity if rolling contacts are enabled:
+    if (material.rollingContacts > 0)
+    {
+        rA = -contacts[i].normal * simplexRadiusA;
+        relativeVelocity += float4(cross(angularVelocityA.xyz, rA.xyz), 0);
+    }
+
+    // Subtract rigidbody velocity:
+    int rbContacts = 1;
+    if (rigidbodyIndex >= 0)
+    {
+        // Note: unlike rA, that is expressed in solver space, rB is expressed in world space.
+        rB = solverToWorld[0].TransformPoint(contacts[i].pointB) - rigidbodies[rigidbodyIndex].com;
+        
+        relativeVelocity -= GetRigidbodyVelocityAtPoint(rigidbodies[rigidbodyIndex], contacts[i].pointB,
+                                                        asfloat(linearDeltasAsInt[rigidbodyIndex]), 
+                                                        asfloat(angularDeltasAsInt[rigidbodyIndex]), inertialSolverFrame[0]);
+
+        rbContacts = rigidbodies[rigidbodyIndex].constraintCount;
+    }
+
+    // Determine impulse magnitude:
+    float tangentMass = effectiveMasses[i].tangentInvMassA + effectiveMasses[i].tangentInvMassB * rbContacts;
+    float bitangentMass = effectiveMasses[i].bitangentInvMassA + effectiveMasses[i].bitangentInvMassB * rbContacts;
+    float2 impulses = SolveFriction(contacts[i], tangentMass, bitangentMass, relativeVelocity, material.staticFriction, material.dynamicFriction, stepTime);
+
+    if (abs(impulses.x) > EPSILON || abs(impulses.y) > EPSILON)
+    {
+        float4 tangentImpulse   = impulses.x * contacts[i].tangent;
+        float4 bitangentImpulse = impulses.y * GetBitangent(contacts[i]);
+        float4 totalImpulse = tangentImpulse + bitangentImpulse;
+
+        float baryScale = BaryScale(contacts[i].pointA);
+        for (j = 0; j < simplexSize; ++j)
+        {
+            int particleIndex = simplices[simplexStart + j];
+            float4 delta1 = (tangentImpulse * effectiveMasses[i].tangentInvMassA + bitangentImpulse * effectiveMasses[i].bitangentInvMassA) * substepTime * contacts[i].pointA[j] * baryScale; 
+            AtomicAddPositionDelta(particleIndex, delta1);
+        }
+
+        if (rigidbodyIndex >= 0)
+        {
+            ApplyImpulse(rigidbodyIndex, -totalImpulse, contacts[i].pointB, inertialSolverFrame[0].frame);
+        }
+
+        // Rolling contacts:
+        if (material.rollingContacts > 0)
+        {
+            // Calculate angular velocity deltas due to friction impulse:
+            float4 invInertiaTensor = 1.0/(GetParticleInertiaTensor(simplexRadiusA, invRotationalMassA) + FLOAT4_EPSILON);
+            float4x4 solverInertiaA = TransformInertiaTensor(invInertiaTensor, orientationA);
+
+            float4 angVelDeltaA = mul(solverInertiaA, float4(cross(rA.xyz, totalImpulse.xyz), 0));
+            float4 angVelDeltaB = FLOAT4_ZERO;
+
+            // Final angular velocities, after adding the deltas:
+            angularVelocityA += angVelDeltaA;
+            float4 angularVelocityB = FLOAT4_ZERO;
+
+            // Calculate weights (inverse masses):
+            float invMassA = length(mul(solverInertiaA, normalizesafe(angularVelocityA)));
+            float invMassB = 0;
+
+            if (rigidbodyIndex >= 0)
+            {
+                angVelDeltaB = mul(-rigidbodies[rigidbodyIndex].inverseInertiaTensor, float4(cross(rB.xyz, totalImpulse.xyz), 0));
+                angularVelocityB = rigidbodies[rigidbodyIndex].angularVelocity + angVelDeltaB;
+                invMassB = length(mul(rigidbodies[rigidbodyIndex].inverseInertiaTensor, normalizesafe(angularVelocityB))) * rbContacts;
+            }
+
+            // Calculate rolling axis and angular velocity deltas:
+            float4 rollAxis = FLOAT4_ZERO;
+            float rollingImpulse = SolveRollingFriction(contacts[i], angularVelocityA, angularVelocityB, material.rollingFriction, invMassA, invMassB, rollAxis);
+            angVelDeltaA += rollAxis * rollingImpulse * invMassA;
+            angVelDeltaB -= rollAxis * rollingImpulse * invMassB;
+
+            // Apply orientation delta to particles:
+            quaternion orientationDelta = AngularVelocityToSpinQuaternion(orientationA, angVelDeltaA, substepTime);
+
+            for (j = 0; j < simplexSize; ++j)
+            {
+                int particleIndex = simplices[simplexStart + j];
+                AtomicAddOrientationDelta(particleIndex, orientationDelta);
+            }
+
+            // Apply angular velocity delta to rigidbody:
+            if (rigidbodyIndex >= 0)
+            {
+                AtomicAddAngularDelta(rigidbodyIndex, angVelDeltaB);
+            }
+        }
+    }
+}
+
+[numthreads(128, 1, 1)]
+void Apply (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int threadIndex = id.x;
+
+    if (threadIndex >= particleCount) return;
+
+    int p = particleIndices[threadIndex];
+
+    ApplyPositionDelta(RW_positions, p, sorFactor);
+    ApplyOrientationDelta(RW_orientations, p, sorFactor);
+}
+
+

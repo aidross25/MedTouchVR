@@ -1,0 +1,132 @@
+﻿#include "ColliderDefinitions.cginc"
+#include "QueryDefinitions.cginc"
+#include "ContactHandling.cginc"
+#include "Transform.cginc"
+#include "Simplex.cginc"
+#include "Bounds.cginc"
+#include "SolverParameters.cginc"
+#include "Optimization.cginc"
+
+#pragma kernel GenerateResults
+
+StructuredBuffer<float4> positions;
+StructuredBuffer<quaternion> orientations;
+StructuredBuffer<float4> principalRadii;
+StructuredBuffer<int> simplices;
+
+StructuredBuffer<transform> transforms;
+StructuredBuffer<queryShape> shapes;
+
+StructuredBuffer<uint2> contactPairs;
+StructuredBuffer<int> contactOffsetsPerType;
+
+RWStructuredBuffer<queryResult> results;
+RWStructuredBuffer<uint> dispatchBuffer;
+
+StructuredBuffer<transform> worldToSolver;
+
+uint maxContacts;  
+
+struct Ray : IDistanceFunction
+{
+    queryShape s;
+    transform colliderToSolver;
+    
+    void Evaluate(in float4 pos, in float4 radii, in quaternion orientation, inout SurfacePoint projectedPoint)
+    {
+        float4x4 simplexToSolver = TRS(pos.xyz, orientation, radii.xyz);
+        float4x4 solverToSimplex = Inverse(simplexToSolver);
+        float4x4 colliderToSimplex = mul(solverToSimplex, TRS(colliderToSolver.translation.xyz, colliderToSolver.rotation, colliderToSolver.scale.xyz));
+
+        // express ray in simplex space (ellipsoid == scaled sphere)
+        float4 rayOrigin = mul(colliderToSimplex, float4(s.center.xyz,1));
+        float4 rayDirection = normalizesafe(mul(colliderToSimplex, float4(s.size.xyz,0)));
+
+        float rayDistance = RaySphereIntersection(rayOrigin.xyz, rayDirection.xyz, float3(0,0,0), 1);
+
+        if (rayDistance < 0)
+        {
+            pos = colliderToSolver.InverseTransformPointUnscaled(pos);
+
+            float mu;
+            float4 centerLine = NearestPointOnEdge(s.center * colliderToSolver.scale, (s.center + s.size) * colliderToSolver.scale, pos, mu);
+            float4 centerToPoint = pos - centerLine;
+            float distanceToCenter = length(centerToPoint);
+
+            float4 normal = centerToPoint / (distanceToCenter + EPSILON);
+
+            projectedPoint.pos = colliderToSolver.TransformPointUnscaled(centerLine + normal * s.contactOffset);
+            projectedPoint.normal = colliderToSolver.TransformDirection(normal);
+        }
+        else
+        {
+            float4 rayPoint = mul(simplexToSolver, float4((rayOrigin + rayDirection * rayDistance).xyz,1));
+            float4 normal = normalizesafe(float4((pos - rayPoint).xyz,0));
+
+            projectedPoint.pos = rayPoint + normal * s.contactOffset;
+            projectedPoint.normal = normal;
+        }
+
+        projectedPoint.bary = float4(1,0,0,0);
+    }
+};
+
+[numthreads(128, 1, 1)]
+void GenerateResults (uint3 id : SV_DispatchThreadID) 
+{
+    uint i = id.x;
+
+    // entry #11 in the dispatch buffer is the amount of pairs for the first shape type.
+    if (i >= dispatchBuffer[11 + 4*RAY_QUERY]) return; 
+   
+    int firstPair = contactOffsetsPerType[RAY_QUERY];
+    int simplexIndex = contactPairs[firstPair + i].x;
+    int queryIndex = contactPairs[firstPair + i].y;
+
+    queryResult c = (queryResult)0;
+
+    Ray rayShape;
+    rayShape.colliderToSolver = worldToSolver[0].Multiply(transforms[queryIndex]);
+    rayShape.s = shapes[queryIndex];
+
+    int simplexSize;
+    int simplexStart = GetSimplexStartAndSize(simplexIndex, simplexSize);
+
+    float4 simplexBary = BarycenterForSimplexOfSize(simplexSize);
+    float4 simplexPoint;
+
+    SurfacePoint surfacePoint = Optimize(rayShape, positions, orientations, principalRadii,
+                                         simplices, simplexStart, simplexSize, simplexBary, simplexPoint, surfaceCollisionIterations, surfaceCollisionTolerance);
+
+
+    float4 simplexPrevPosition = FLOAT4_ZERO;
+    float simplexRadius = 0;
+    for (int j = 0; j < simplexSize; ++j)
+    {
+        int particleIndex = simplices[simplexStart + j];
+        simplexPrevPosition += positions[particleIndex] * simplexBary[j];
+        simplexRadius += EllipsoidRadius(surfacePoint.normal, orientations[particleIndex], principalRadii[particleIndex].xyz) * simplexBary[j];
+    }
+
+    c.queryPoint = surfacePoint.pos;
+    c.normal = surfacePoint.normal;
+    c.simplexBary = simplexBary;
+    c.simplexIndex = simplexIndex;
+    c.queryIndex = queryIndex;
+    c.dist = dot(simplexPrevPosition - surfacePoint.pos, surfacePoint.normal) - simplexRadius;
+
+    if (c.dist <= rayShape.s.maxDistance)
+    {
+        uint count = results.IncrementCounter();
+        if (count < maxContacts)
+        {
+            float4 pointOnRay = surfacePoint.pos + surfacePoint.normal * c.dist;
+            c.distAlongRay = dot(pointOnRay.xyz - rayShape.s.center.xyz, normalizesafe(rayShape.s.size.xyz));
+
+            results[count] = c;
+            
+            InterlockedMax(dispatchBuffer[0],(count + 1) / 128 + 1);
+            InterlockedMax(dispatchBuffer[3], count + 1);
+        }
+    }
+}
