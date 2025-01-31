@@ -1,0 +1,432 @@
+﻿#pragma kernel SortFluidData
+
+#pragma kernel Emit
+#pragma kernel CopyAliveCount
+#pragma kernel Update
+#pragma kernel Copy
+
+#pragma kernel Sort
+#pragma kernel ClearMesh
+#pragma kernel BuildMesh
+
+#include "InterlockedUtils.cginc"
+#include "MathUtils.cginc"
+#include "GridUtils.cginc"
+#include "Simplex.cginc"
+#include "Bounds.cginc"
+#include "SolverParameters.cginc"
+#include "FluidKernels.cginc"
+
+StructuredBuffer<int> sortedToOriginal;
+RWStructuredBuffer<float4> sortedPositions;
+RWStructuredBuffer<float4> sortedVelocities;
+RWStructuredBuffer<quaternion> sortedOrientations;
+RWStructuredBuffer<float4> sortedRadii;
+
+StructuredBuffer<uint> cellOffsets;    // start of each cell in the sorted item array.
+StructuredBuffer<uint> cellCounts;     // number of item in each cell.
+StructuredBuffer<int> gridHashToSortedIndex; 
+StructuredBuffer<aabb> solverBounds;
+
+StructuredBuffer<uint> fluidSimplices;
+StructuredBuffer<int> activeParticles;
+StructuredBuffer<float4> positions;
+StructuredBuffer<float4> orientations;
+StructuredBuffer<float4> velocities;
+RWStructuredBuffer<float4> angularVelocities;
+StructuredBuffer<float4> principalRadii;
+StructuredBuffer<float4> fluidMaterial;
+StructuredBuffer<float4> fluidData;
+
+StructuredBuffer<float4> inputPositions; // w component is distance to camera
+StructuredBuffer<float4> inputVelocities; // w component is buoyancy
+StructuredBuffer<float4> inputColors;     // rgba diffuse color
+StructuredBuffer<float4> inputAttributes; // currentlifetime, maxlifetime, size, drag
+
+RWStructuredBuffer<float4> outputPositions;
+RWStructuredBuffer<float4> outputVelocities;
+RWStructuredBuffer<float4> outputColors;
+RWStructuredBuffer<float4> outputAttributes;
+
+RWStructuredBuffer<uint> dispatch;
+RWByteAddressBuffer vertices;
+RWByteAddressBuffer indices;
+
+// Variables set from the CPU
+uint activeParticleCount;
+uint maxFoamParticles;
+
+float2 vorticityRange;
+float2 velocityRange;
+float foamGenerationRate;
+float potentialIncrease;
+float potentialDiffusion;
+
+float advectionRadius;
+float lifetime;
+float lifetimeRandom;
+float particleSize;
+float buoyancy;
+float drag;
+float airDrag;
+float sizeRandom;
+float isosurface;
+float airAging;
+float3 agingOverPopulation;
+float4 foamColor;
+float4 sortAxis;
+
+const uint groupWidth;
+const uint groupHeight;
+const uint stepIndex;
+
+float deltaTime;
+
+static const int4 quadrantOffsets[] =
+{
+    int4(0, 0, 0, 1),
+    int4(1, 0, 0, 1),
+    int4(0, 1, 0, 1),
+    int4(1, 1, 0, 1),
+    int4(0, 0, 1, 1),
+    int4(1, 0, 1, 1),
+    int4(0, 1, 1, 1),
+    int4(1, 1, 1, 1)
+};
+
+//https://www.shadertoy.com/view/4djSRW
+float3 hash33(float3 p3)
+{
+    p3 = frac(p3 * float3(.1031, .1030, .0973));
+    p3 += dot(p3, p3.yxz+33.33);
+    return frac((p3.xxy + p3.yxx)*p3.zyx);
+}
+
+float hash13(float3 p3)
+{
+    p3  = frac(p3 * .1031);
+    p3 += dot(p3, p3.zyx + 31.32);
+    return frac((p3.x + p3.y) * p3.z);
+}
+
+void RandomInCylinder(float seed, float4 pos1, float4 pos2, float radius, out float4 position, out float3 velocity)
+{
+    float3 rand = hash33(lerp(pos1.xyz, pos2.xyz, seed));
+
+    float3 v = pos2.xyz - pos1.xyz;
+    float d = length(v);
+    float3 b1 = d > EPSILON ? v / d : v;
+    float3 b2 = normalizesafe(cross(b1, float3(1,0,0)));
+    float3 b3 = cross(b2, b1);
+    
+    float theta = rand.y * 2 * PI;
+    float2 disc = radius * sqrt(rand.x) * float2(cos(theta),sin(theta));
+
+    velocity = b2 * disc.x + b3 * disc.y;
+    position = float4(pos1.xyz + b1 * d * rand.z + velocity,0); 
+}
+
+[numthreads(128, 1, 1)]
+void SortFluidData (uint3 id : SV_DispatchThreadID)
+{
+    unsigned int i = id.x;
+    if (i >= dispatch[3]) return;
+    
+    int original = sortedToOriginal[i];
+    sortedPositions[i] = float4(positions[original].xyz, 1 / fluidData[original].x);
+    sortedVelocities[i] = velocities[original];
+    sortedOrientations[i] = orientations[original];
+    sortedRadii[i] = fluidMaterial[original].x * (principalRadii[original] / principalRadii[original].x); 
+}
+
+[numthreads(128, 1, 1)]
+void Emit (uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= activeParticleCount) return;
+
+    int p = activeParticles[i];
+
+    float4 angVel = angularVelocities[p];
+    float2 potential = UnpackFloatRG(angVel.w);
+
+    // calculate fluid potential for foam generation:
+    float vorticityPotential = Remap01(length(angularVelocities[p]), vorticityRange.x, vorticityRange.y); 
+    float velocityPotential = Remap01(length(velocities[p]), velocityRange.x, velocityRange.y);
+    float potentialDelta = velocityPotential * vorticityPotential * deltaTime * potentialIncrease;
+
+    // update foam potential:
+    potential.y = saturate(potential.y * potentialDiffusion + potentialDelta);
+
+    // calculate amount of emitted particles
+    potential.x += foamGenerationRate * potential.y * deltaTime;
+    int emitCount = (int)potential.x;
+    potential.x -= emitCount;
+    
+    for (int j = 0; j < emitCount; ++j)
+    {
+        // atomically increment alive particle counter:
+        uint count;
+        InterlockedAdd(dispatch[3], 1, count);
+
+        if (count < maxFoamParticles)
+        {
+            // initialize foam particle in a random position inside the cylinder spawned by fluid particle:
+            float3 radialVelocity;
+            RandomInCylinder(j, positions[p], positions[p] + velocities[p] * deltaTime, principalRadii[p].x, outputPositions[count], radialVelocity);
+            
+            // calculate initial life/size/color:
+            float initialLife = potential.y * (lifetime - hash13(positions[p].xyz) * lifetime * lifetimeRandom);
+            float initialSize = particleSize - hash13(positions[p].xyz + float3(0.51,0.23,0.1)) * particleSize * sizeRandom;
+
+            outputVelocities[count] = velocities[p] + float4(radialVelocity, buoyancy);
+            outputColors[count] = foamColor;
+            outputAttributes[count] = float4(1, 1/initialLife,initialSize,PackFloatRGBA(float4(airAging / 50.0, airDrag, drag, isosurface)));
+        }
+    }
+
+    angVel.w = PackFloatRG(potential);
+    angularVelocities[p] = angVel;
+}
+
+[numthreads(1, 1, 1)]
+void CopyAliveCount (uint3 id : SV_DispatchThreadID)
+{
+    dispatch[0] = dispatch[3] / 128 + 1;
+    dispatch[8] = dispatch[3];
+    dispatch[4] = dispatch[7] = 0;
+}
+
+[numthreads(128, 1, 1)]
+void Update (uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= dispatch[8]) return; 
+    
+    uint count;
+    InterlockedAdd(dispatch[3], -1, count);
+    count--;
+
+    if (count < maxFoamParticles && inputAttributes[count].x > 0)
+    {
+        uint aliveCount;
+        InterlockedAdd(dispatch[7], 1, aliveCount);
+        InterlockedMax(dispatch[4],(aliveCount + 1) / 128 + 1);
+
+        float4 attributes = inputAttributes[count];
+        float4 packedData = UnpackFloatRGBA(attributes.w);
+
+        int offsetCount = (mode == 1) ? 4 : 8;
+        float4 advectedVelocity = FLOAT4_ZERO;
+        float kernelSum = -packedData.w;
+        int neighbourCount = 0;
+
+        float4 diffusePos = inputPositions[count];
+
+        for (uint m = 1; m <= levelPopulation[0]; ++m)
+        {
+            uint l = levelPopulation[m];
+            float radius = CellSizeOfLevel(l);
+            float interactionDist = radius * 0.5;
+
+            float4 cellCoords = floor((diffusePos - solverBounds[0].min_) / radius);
+
+            cellCoords[3] = 0;
+            if (mode == 1)
+                cellCoords[2] = 0;
+
+            float4 posInCell = diffusePos - (solverBounds[0].min_ + cellCoords * radius + float4(interactionDist,interactionDist,interactionDist,interactionDist));
+            int4 quadrant = (int4)sign(posInCell);
+            quadrant[3] = l;
+           
+            for (int j = 0; j < offsetCount; ++j)
+            {
+                int4 neighborCoord = (int4)cellCoords + quadrantOffsets[j] * quadrant;
+                int cellIndex = gridHashToSortedIndex[GridHash(neighborCoord)];
+                uint n = cellOffsets[cellIndex]; 
+                uint end = n + cellCounts[cellIndex];
+
+                for (;n < end; ++n)
+                {
+                    uint p = fluidSimplices[n];
+
+                    int4 particleCoord = int4(floor((positions[p].xyz - solverBounds[0].min_.xyz)/ radius).xyz,l);
+                    if (any (particleCoord - neighborCoord))
+                        continue;
+
+                    float4 normal = diffusePos - positions[p];
+                    normal[3] = 0;
+                    if (mode == 1)
+                        normal[2] = 0;
+
+                    float d = length(normal);
+                    if (d <= interactionDist)
+                    {
+                        float3 radii = principalRadii[p].xyz;
+
+                        normal.xyz = rotate_vector(q_conj(orientations[p]), normal.xyz) / radii;
+                        d = length(normal.xyz) * radii.x;
+
+                        // velocities.w is volume (1/normalized density):
+                        float w = positions[p].w * Poly6(d, radii.x);
+
+                        kernelSum += w;
+                        advectedVelocity += velocities[p] * w;
+                        neighbourCount++;
+                    }
+                }
+            }
+        }
+        
+        float4 forces = FLOAT4_ZERO;
+        float velocityScale = 1;
+        float agingScale = 1 + Remap01(dispatch[8] / (float)maxFoamParticles,agingOverPopulation.x,agingOverPopulation.y) * (agingOverPopulation.z - 1);
+
+        // foam/bubble particle:
+        if (kernelSum > EPSILON && neighbourCount > 3)
+        {
+            // advection: 
+            forces = packedData.z / deltaTime * (advectedVelocity / (kernelSum + packedData.w) - inputVelocities[count]);
+
+            // buoyancy:
+            forces -= float4(gravity,0) * inputVelocities[count].w * saturate(kernelSum);
+            
+        }
+        else // spray:
+        { 
+            // gravity:
+            forces += float4(gravity,0);
+
+            // atmospheric drag/aging:
+            velocityScale = packedData.y;
+            agingScale *= packedData.x * 50;
+        }
+
+        // don't change 4th component, as its used to store buoyancy control parameter.
+        forces[3] = 0; 
+        
+        // update particle data:
+        attributes.x -= attributes.y * deltaTime * agingScale;
+        outputAttributes[aliveCount] = attributes;
+        outputColors[aliveCount] = inputColors[count];
+
+        // integrate:
+        outputVelocities[aliveCount] = (inputVelocities[count] + forces * deltaTime) * velocityScale;
+        outputPositions[aliveCount] = float4((inputPositions[count] + outputVelocities[aliveCount] * deltaTime).xyz, neighbourCount);
+    }
+}
+
+[numthreads(128, 1, 1)]
+void Copy (uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+
+    if (i == 0)
+    {
+        dispatch[0] = dispatch[4];
+        dispatch[3] = dispatch[7];
+    }
+
+    if (i >= dispatch[7]) return;
+
+    outputPositions[i] = inputPositions[i];
+    outputVelocities[i] = inputVelocities[i];
+    outputColors[i] = inputColors[i];
+    outputAttributes[i] = inputAttributes[i];
+}
+
+[numthreads(128,1,1)]
+void Sort(uint3 id : SV_DispatchThreadID) 
+{
+    uint i = id.x;
+
+    uint hIndex = i & (groupWidth - 1);
+    uint indexLeft = hIndex + (groupHeight + 1) * (i / groupWidth);
+    uint rightStepSize = stepIndex == 0 ? groupHeight - 2 * hIndex : (groupHeight + 1) / 2;
+    uint indexRight = indexLeft + rightStepSize;
+
+    // Exit if out of bounds
+    if (indexRight >= dispatch[3]) return;
+
+    float4 posLeft = inputPositions[indexLeft];
+    float4 posRight = inputPositions[indexRight];
+    float4 velLeft = inputVelocities[indexLeft];
+    float4 velRight = inputVelocities[indexRight];
+    float4 colorLeft = inputColors[indexLeft];
+    float4 colorRight = inputColors[indexRight];
+    float4 attrLeft = inputAttributes[indexLeft];
+    float4 attrRight = inputAttributes[indexRight];
+
+    // calculate distance to camera:
+    float distLeft = dot(posLeft.xyz, sortAxis.xyz);
+    float distRight = dot(posRight.xyz, sortAxis.xyz);
+
+    // Swap entries if order is incorrect
+    if (distLeft < distRight)
+    {
+        outputPositions[indexLeft] = posRight;
+        outputPositions[indexRight] = posLeft;
+        outputVelocities[indexLeft] = velRight;
+        outputVelocities[indexRight] = velLeft;
+        outputColors[indexLeft] = colorRight;
+        outputColors[indexRight] = colorLeft;
+        outputAttributes[indexLeft] = attrRight;
+        outputAttributes[indexRight] = attrLeft;
+    }
+}
+
+[numthreads(128, 1, 1)]
+void ClearMesh (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+    if (i >= maxFoamParticles) return;
+
+    indices.Store((i*6)<<2, 0);
+    indices.Store((i*6+1)<<2, 0);
+    indices.Store((i*6+2)<<2, 0);
+
+    indices.Store((i*6+3)<<2, 0);
+    indices.Store((i*6+4)<<2, 0);
+    indices.Store((i*6+5)<<2, 0);
+}
+
+[numthreads(128, 1, 1)]
+void BuildMesh (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+    if (i >= dispatch[3]) return;
+
+    // <<2 = multiply by 4 to get byte address, since a float/int is 4 bytes in size.
+    
+    // particle data is the same for all 4 vertices:
+    for (uint v = i*4; v < i*4 + 4; ++v)
+    {
+        int base = v*19;
+        
+        // pos
+        vertices.Store4(base<<2, asuint(float4(inputPositions[i].xyz, 1)));
+
+        // color:
+        vertices.Store4((base+7)<<2, asuint( inputColors[i] ));
+        
+        // velocity and attributes
+        vertices.Store4((base+11)<<2, asuint( inputVelocities[i] ));
+        vertices.Store4((base+15)<<2, asuint( inputAttributes[i] ));
+    }
+
+    //different offset for each vertex:
+    int base = i*4;
+    vertices.Store3((base*19 + 4)<<2, asuint(float3(1,1,0)));
+    vertices.Store3(((base+1)*19 + 4)<<2, asuint(float3(-1,1,0)));
+    vertices.Store3(((base+2)*19 + 4)<<2, asuint(float3(-1,-1,0)));
+    vertices.Store3(((base+3)*19 + 4)<<2, asuint(float3(1,-1,0)));
+
+    // indices:
+    indices.Store((i*6)<<2, asuint(i*4+2));
+    indices.Store((i*6+1)<<2, asuint(i*4+1));
+    indices.Store((i*6+2)<<2, asuint(i*4));
+
+    indices.Store((i*6+3)<<2, asuint(i*4+3));
+    indices.Store((i*6+4)<<2, asuint(i*4+2));
+    indices.Store((i*6+5)<<2, asuint(i*4));
+}
