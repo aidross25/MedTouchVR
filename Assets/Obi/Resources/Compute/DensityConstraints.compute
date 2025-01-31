@@ -1,0 +1,326 @@
+﻿#pragma kernel UpdateDensities
+#pragma kernel Apply
+#pragma kernel ApplyPositionDeltas
+#pragma kernel ApplyAtmosphere
+#pragma kernel AccumulateSmoothPositions
+#pragma kernel AccumulateAnisotropy
+#pragma kernel AverageAnisotropy
+
+#include "MathUtils.cginc"
+#include "Quaternion.cginc"
+#include "AtomicDeltas.cginc"
+#include "FluidKernels.cginc"
+  
+StructuredBuffer<uint> neighbors;
+StructuredBuffer<uint> neighborCounts;
+
+StructuredBuffer<int> sortedToOriginal; 
+
+StructuredBuffer<float4> sortedPositions;
+StructuredBuffer<float4> sortedPrevPositions;
+StructuredBuffer<float4> sortedFluidMaterials;
+StructuredBuffer<float4> sortedFluidInterface;
+StructuredBuffer<float4> sortedPrincipalRadii;
+StructuredBuffer<float4> sortedUserData;
+RWStructuredBuffer<float4> sortedFluidData;
+
+StructuredBuffer<quaternion> prevOrientations;
+
+StructuredBuffer<float4> wind;
+
+RWStructuredBuffer<float4> fluidData;
+RWStructuredBuffer<float4> positions;
+RWStructuredBuffer<float4> orientations;
+RWStructuredBuffer<float4> velocities;
+RWStructuredBuffer<float4> userData;
+RWStructuredBuffer<float4> normals;
+
+RWStructuredBuffer<float4> massCenters;
+RWStructuredBuffer<float4> prevMassCenters;
+
+RWStructuredBuffer<float4> renderablePositions;
+RWStructuredBuffer<quaternion> renderableOrientations;
+RWStructuredBuffer<float4> renderableRadii;
+
+RWStructuredBuffer<float4x4> anisotropies;
+StructuredBuffer<uint> dispatchBuffer;
+
+// Variables set from the CPU
+uint maxNeighbors;
+float deltaTime;
+
+[numthreads(128, 1, 1)]
+void UpdateDensities (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+    if (i >= dispatchBuffer[3]) return;
+
+    float4 positionA = sortedPositions[i];
+    float4 fluidMaterialA = sortedFluidMaterials[i];
+    
+    // self-contribution:
+    float avgKernel = Poly6(0,fluidMaterialA.x);
+    float restVolumeA = pow(abs(sortedPrincipalRadii[i].x * 2),3-mode); // in 2D, mode == 1 so amount of dimensions is 2.
+    float grad = restVolumeA * Spiky(0,fluidMaterialA.x);
+    
+    float4 fluidDataA = float4(avgKernel,0,grad,grad*grad);
+    float4 massCenterA = avgKernel * float4(positionA.xyz, 1) / positionA.w;
+    float4 prevMassCenterA = avgKernel * float4(sortedPrevPositions[i].xyz, 1) / positionA.w;
+    float4x4 anisotropyA = avgKernel * (multrnsp4(positionA, sortedPrevPositions[i]) + FLOAT4X4_IDENTITY * 0.2 * sortedPrincipalRadii[i].x * sortedPrincipalRadii[i].x) / positionA.w;
+
+    float4 fluidMaterialB;
+    float4 positionB;
+    
+    // iterate over neighborhood, calculate density and gradient.
+    uint count = min(maxNeighbors, neighborCounts[i]);
+    for (uint j = 0; j < count; ++j)
+    {
+        int n = neighbors[maxNeighbors * i + j];
+        
+        fluidMaterialB = sortedFluidMaterials[n];
+        positionB = sortedPositions[n];
+        float dist = length((positionA - positionB).xyz);
+        
+        float avgKernel = (Poly6(dist,fluidMaterialA.x) +  Poly6(dist,fluidMaterialB.x)) * 0.5f;
+
+        float restVolumeB = pow(abs(sortedPrincipalRadii[n].x * 2),3-mode); 
+        float grad = restVolumeB * Spiky(dist,fluidMaterialA.x);
+        fluidDataA += float4(restVolumeB / restVolumeA * avgKernel,0,grad,grad*grad);
+
+        // accumulate masses for COMs and moment matrices:       
+        massCenterA += avgKernel * float4(positionB.xyz, 1) / positionB.w;
+        prevMassCenterA += avgKernel * float4(sortedPrevPositions[n].xyz, 1) / positionB.w;
+        anisotropyA += avgKernel * (multrnsp4(positionB, sortedPrevPositions[n]) + FLOAT4X4_IDENTITY * 0.2 * sortedPrincipalRadii[n].x * sortedPrincipalRadii[n].x) / positionB.w;
+    }
+    
+    // self particle contribution to density and gradient:
+    fluidDataA[3] += fluidDataA[2] * fluidDataA[2];
+    
+    // usually, we'd weight density by mass (density contrast formulation) by dividing by invMass. Then, multiply by invMass when
+    // calculating the state equation (density / restDensity - 1, restDensity = mass / volume, so density * invMass * restVolume - 1
+    // We end up with density / invMass * invMass * restVolume - 1, invMass cancels out.
+    float constraint = max(0, fluidDataA[0] * restVolumeA - 1);
+
+    // calculate lambda:
+    fluidDataA[1] = -constraint / (positionA.w * fluidDataA[3] + EPSILON);
+
+    // get total neighborhood mass: 
+    float M = massCenterA[3];
+    massCenterA /= massCenterA[3];
+    prevMassCenterA /= prevMassCenterA[3];
+
+    // update moment:
+    anisotropyA -= M * multrnsp4(massCenterA, prevMassCenterA);
+   
+    // extract neighborhood orientation delta:
+    renderableOrientations[i] = ExtractRotation(anisotropyA, QUATERNION_IDENTITY, 2);
+
+    sortedFluidData[i] = fluidDataA;
+    massCenters[i] = massCenterA;
+    prevMassCenters[i] = prevMassCenterA;
+}
+
+[numthreads(128, 1, 1)]
+void Apply (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+    if (i >= dispatchBuffer[3]) return;
+    
+    float restVolumeA = pow(abs(sortedPrincipalRadii[i].x * 2),3-mode); 
+    float4 fluidMaterialA = sortedFluidMaterials[i];
+    float4 positionA = sortedPositions[i];
+    float4 prevPositionA = sortedPrevPositions[i];
+    float4 massCenterA = massCenters[i];
+    float lambdaA = sortedFluidData[i][1];
+
+    float4 fluidMaterialB;
+    float4 fluidInterfaceB;
+    float4 massCenterB;
+    float4 positionB;
+
+    float4 pressureDelta = FLOAT4_ZERO;
+    float4 viscVortDelta = FLOAT4_ZERO;
+
+    uint count = min(maxNeighbors, neighborCounts[i]);
+    for (uint j = 0; j < count; ++j)
+    {
+        int n = neighbors[maxNeighbors * i + j];
+
+        fluidMaterialB = sortedFluidMaterials[n];
+        massCenterB = massCenters[n];
+        positionB = sortedPositions[n];
+
+        float4 normal = float4((positionA - positionB).xyz,0);
+        float dist = length(normal);
+
+        float restVolumeB = pow(abs(sortedPrincipalRadii[n].x * 2),3-mode);
+        
+        // calculate lambda correction due to polarity (cohesion):
+        float cAvg = (Cohesion(dist,fluidMaterialA.x * 1.4) + Cohesion(dist,fluidMaterialB.x * 1.4)) * 0.5;
+        float st = 0.2 * cAvg * (1 - saturate(abs(fluidMaterialA.y - fluidMaterialB.y))) * (fluidMaterialA.y + fluidMaterialB.y) * 0.5;
+        float scorrA = -st / (positionA.w * sortedFluidData[i][3] + EPSILON);
+        float scorrB = -st / (positionB.w * sortedFluidData[n][3] + EPSILON);
+        
+        float avgGradient = (Spiky(dist,fluidMaterialA.x) + Spiky(dist,fluidMaterialB.x)) * 0.5;
+        pressureDelta += normal / (dist + EPSILON) * avgGradient * ((lambdaA + scorrA) * restVolumeB + (sortedFluidData[n][1] + scorrB) * restVolumeA);
+        
+        // viscosity and vorticity:
+        float4 viscGoal = float4(massCenterB.xyz + rotate_vector(renderableOrientations[n], (prevPositionA - prevMassCenters[n]).xyz), 0);
+        float4 vortGoal = float4(massCenterB.xyz + rotate_vector(renderableOrientations[n], (positionA - massCenterB).xyz), 0);
+        viscVortDelta += (viscGoal - positionA) * fluidMaterialB.z + (vortGoal - positionA) * fluidMaterialB.w * 0.1;
+    }
+
+    // viscosity and vorticity:
+    float4 viscGoal = float4(massCenterA.xyz + rotate_vector(renderableOrientations[i], (prevPositionA - prevMassCenters[i]).xyz), 0);
+    float4 vortGoal = float4(massCenterA.xyz + rotate_vector(renderableOrientations[i], (positionA - massCenterA).xyz), 0);
+    viscVortDelta += (viscGoal - positionA) * fluidMaterialA.z + (vortGoal - positionA) * fluidMaterialA.w * 0.1;
+    
+    AddPositionDelta(sortedToOriginal[i], pressureDelta * positionA.w + viscVortDelta / (neighborCounts[i] + 1));
+}
+
+[numthreads(128, 1, 1)]
+void ApplyPositionDeltas (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+    if (i >= dispatchBuffer[3]) return;
+
+    int p = sortedToOriginal[i];
+    ApplyPositionDelta(positions, p, 1);
+    
+    orientations[p] = qmul(renderableOrientations[i], prevOrientations[p]);
+    fluidData[p] = sortedFluidData[i];
+}
+
+[numthreads(128, 1, 1)]
+void ApplyAtmosphere (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+    if (i >= dispatchBuffer[3]) return;
+    
+    int originalIndex = sortedToOriginal[i];
+
+    float4 normal = FLOAT4_ZERO;
+    float restVolumeA = pow(abs(sortedPrincipalRadii[i].x * 2),3 - mode); 
+    float4 positionA = sortedPositions[i];
+    float radiiA = sortedFluidMaterials[i].x;
+    float4 userDataA = sortedUserData[i];
+    
+    uint count = min(maxNeighbors, neighborCounts[i]);
+    for (uint j = 0; j < count; ++j)
+    {
+        int n = neighbors[maxNeighbors * i + j];
+
+        float restVolumeB =  pow(abs(sortedPrincipalRadii[n].x * 2),3 - mode);
+        float radiiB = sortedFluidMaterials[n].x;
+
+        float4 dir = positionA - sortedPositions[n];
+        float dist = length(dir);
+
+        float avgKernel = (Poly6(dist,radiiA) +  Poly6(dist,radiiB)) * 0.5f;
+        float avgGradient = (Spiky(dist,radiiA) + Spiky(dist,radiiB)) * 0.5;
+
+        // property diffusion:
+        float diffusionSpeed = (sortedFluidInterface[i].w + sortedFluidInterface[n].w) * avgKernel * deltaTime;
+        float4 userDelta = (sortedUserData[n] - userDataA) * diffusionSpeed;
+        userDataA += restVolumeB / restVolumeA * userDelta;
+
+        // calculate color field  normal:
+        float radius = (radiiA + radiiB) * 0.5f;
+        float4 vgrad = dir / (dist + EPSILON) * avgGradient;
+        normal += vgrad * radius * restVolumeB;
+    }
+
+    // particles near the surface should experience drag:
+    float4 velocityDiff = velocities[originalIndex] - wind[originalIndex];
+    velocities[originalIndex] -= sortedFluidInterface[i].x * velocityDiff * max(0, 1 - fluidData[i][0] * restVolumeA) * deltaTime;
+
+    // ambient pressure:
+    velocities[originalIndex] += sortedFluidInterface[i].y * normal * deltaTime;
+
+    normals[originalIndex] = normal;
+    userData[originalIndex] = userDataA;
+}
+
+[numthreads(128, 1, 1)]
+void AccumulateSmoothPositions (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int p1 = id.x;
+    if (p1 >= dispatchBuffer[3]) return;
+
+    anisotropies[p1] = FLOAT4X4_ZERO;
+    float4 renderablePositionA = renderablePositions[p1];
+    float radiiA = sortedFluidMaterials[p1].x;
+    float4 avgPosition = float4(renderablePositionA.xyz, 1);//FLOAT4_ZERO;
+    
+    uint count = min(maxNeighbors, neighborCounts[p1]);
+    for (uint j = 0; j < count; ++j)
+    {
+        int p2 = neighbors[maxNeighbors * p1 + j];
+        float4 renderablePositionB = renderablePositions[p2];
+        
+        float dist = length((renderablePositionA - renderablePositionB).xyz);
+
+        float avgKernel = (Poly6(dist,radiiA) + Poly6(dist,sortedFluidMaterials[p2].x)) * 0.5;
+        avgPosition += float4(renderablePositionB.xyz,1) * avgKernel;
+    }
+
+    anisotropies[p1]._m03_m13_m23_m33 = avgPosition / avgPosition.w;
+}
+
+[numthreads(128, 1, 1)]
+void AccumulateAnisotropy (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int p1 = id.x;
+    if (p1 >= dispatchBuffer[3]) return;
+
+    float4x4 anisotropyA = anisotropies[p1];
+    float4 renderablePositionA = renderablePositions[p1];
+    float radiiA = sortedFluidMaterials[p1].x;
+    
+    uint count = min(maxNeighbors, neighborCounts[p1]);
+    for (uint j = 0; j < count; ++j)
+    {
+        int p2 = neighbors[maxNeighbors * p1 + j];
+        float4 renderablePositionB = renderablePositions[p2];
+        
+        float dist = length((renderablePositionA - renderablePositionB).xyz);
+
+        float avgKernel = (Poly6(dist,radiiA) + Poly6(dist,sortedFluidMaterials[p2].x)) * 0.5;
+
+        float4 r = (renderablePositionB - anisotropyA._m03_m13_m23_m33) * avgKernel;
+        anisotropyA += multrnsp4(r, r);
+    }
+
+    anisotropies[p1] = anisotropyA;
+}
+
+[numthreads(128, 1, 1)]
+void AverageAnisotropy (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+    if (i >= dispatchBuffer[3]) return;
+
+    int o = sortedToOriginal[i];
+
+    if (anisotropies[i]._m00 + anisotropies[i]._m11 + anisotropies[i]._m22 > 0.01f)
+    {
+        float3 singularValues;
+        float3x3 u;
+        EigenSolve((float3x3)anisotropies[i], singularValues, u);
+
+        float maxVal = singularValues[0];
+        float3 s = max(singularValues, maxVal / maxAnisotropy) / maxVal * sortedPrincipalRadii[i].x;
+
+        renderableOrientations[o] = q_look_at(u._m02_m12_m22,u._m01_m11_m21);
+        renderableRadii[o] = float4(s.xyz,1);
+    }
+    else
+    {
+        float radius = sortedPrincipalRadii[i].x / maxAnisotropy;
+        renderableOrientations[o] = QUATERNION_IDENTITY;
+        renderableRadii[o] = float4(radius,radius,radius,1);
+        fluidData[o].x = 1 / pow(abs(radius * 2),3-mode); // normal volume of an isolated particle.
+    }
+    
+    renderablePositions[o] = lerp(renderablePositions[o],anisotropies[i]._m03_m13_m23_m33,min((maxAnisotropy - 1)/3.0f,1));
+}
