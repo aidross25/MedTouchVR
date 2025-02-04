@@ -112,7 +112,7 @@ void UpdateSkinConstraints (uint3 id : SV_DispatchThreadID)
     {
         Influence inf = influences[skin.firstSkinWeight + k];
 
-        float4x4 bind = boneBindMatrices[skin.firstParticleBindPose + inf.index];
+        float4x4 bind = boneBindMatrices[skin.firstBoneBindPose + inf.index];
 
         int boneIndex = skel.firstBone + inf.index;
         float4x4 deform = TRS(bonePos[boneIndex], boneRot[boneIndex], boneScl[boneIndex]);

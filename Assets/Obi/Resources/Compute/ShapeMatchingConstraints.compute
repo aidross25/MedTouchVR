@@ -161,7 +161,7 @@ void Project (uint3 id : SV_DispatchThreadID)
     RW_linearTransforms[i] = mul(Apq_def, Aqq[i]);
 
     // extract rotation from transform matrix, using warmstarting and few iterations:
-    constraintOrientations[i] = ExtractRotation(Apq_def, constraintOrientations[i], 2);
+    constraintOrientations[i] = ExtractRotation(Apq_def, constraintOrientations[i], 5);
    
     // calculate particle orientations:
     if (explicitGroup[i] > 0)

@@ -80,7 +80,7 @@ namespace Obi
         };
 
         public readonly static Vector3Int[] faceNeighborhood =
-{
+        {
             new Vector3Int(-1,0,0),
             new Vector3Int(1,0,0),
             new Vector3Int(0,-1,0),
@@ -281,6 +281,7 @@ namespace Obi
                 yield return fillCoroutine.Current;
         }
 
+        // Ensures boundary is only one voxel thick.
         public void BoundaryThinning()
         {
             for (int x = 0; x < resolution.x; ++x)
@@ -306,6 +307,184 @@ namespace Obi
                         if (sum % faceNeighborhood.Length != 0 && this[x, y, z] == Voxel.Inside) 
                             this[x, y, z] = Voxel.Boundary;
                     }
+        }
+
+        public void CreateMesh(ref Mesh mesh, int smoothingIterations)
+        {
+            if (mesh == null)
+                mesh = new Mesh();
+
+            mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+            mesh.Clear();
+            List<Vector3> vertices = new List<Vector3>();
+            List<Vector3> vertices2 = new List<Vector3>();
+            List<int> tris = new List<int>();
+            vertices.Clear();
+            vertices2.Clear();
+            tris.Clear();
+
+            int[] vtxIndex = new int[voxelCount];
+            for (int i = 0; i < vtxIndex.Length; ++i)
+                vtxIndex[i] = -1;
+
+            // create vertices:
+            for (int x = 0; x < resolution.x; ++x)
+                for (int y = 0; y < resolution.y; ++y)
+                    for (int z = 0; z < resolution.z; ++z)
+                        if (this[x, y, z] == Voxel.Boundary)
+                        {
+                            vtxIndex[GetVoxelIndex(x, y, z)] = vertices.Count;
+                            var vtx = new Vector3(Origin.x + x + 0.5f, Origin.y + y + 0.5f, Origin.z + z + 0.5f) * voxelSize;
+                            vertices.Add(vtx);
+                            vertices2.Add(vtx);
+                        }
+
+            List<Vector3> inputVertices = vertices;
+            List<Vector3> outputVertices = vertices2;
+            for (int i = 0; i < smoothingIterations; ++i)
+            {
+                for (int x = 0; x < resolution.x; ++x)
+                    for (int y = 0; y < resolution.y; ++y)
+                        for (int z = 0; z < resolution.z; ++z)
+                            if (this[x, y, z] == Voxel.Boundary)
+                            {
+                                Vector3 avg = Vector3.zero;
+
+                                int count = 0;
+                                for (int j = 0; j < faceNeighborhood.Length; ++j)
+                                {
+                                    var index = faceNeighborhood[j];
+                                    if (VoxelExists(index.x + x, index.y + y, index.z + z) && this[index.x + x, index.y + y, index.z + z] == Voxel.Boundary)
+                                    {
+                                        avg += inputVertices[vtxIndex[GetVoxelIndex(index.x + x, index.y + y, index.z + z)]];
+                                        count++;
+                                    }
+                                }
+
+                                if (count > 0)
+                                    outputVertices[vtxIndex[GetVoxelIndex(x, y, z)]] = avg / count;
+                            }
+
+                var aux = inputVertices;
+                inputVertices = outputVertices;
+                outputVertices = aux;
+            }
+
+            // triangulate
+            for (int x = 0; x < resolution.x; ++x)
+                for (int y = 0; y < resolution.y; ++y)
+                    for (int z = 0; z < resolution.z; ++z)
+                        if (this[x, y, z] == Voxel.Boundary)
+                        {
+                            int x0y0z0 = GetVoxelIndex(x, y, z);
+
+                            int x1y0z0 = VoxelExists(x + 1, y, z) ? GetVoxelIndex(x+1, y, z) : -1;
+                            int x1y1z0 = VoxelExists(x + 1, y + 1, z) ? GetVoxelIndex(x+1, y+1, z) : -1;
+                            int x0y1z0 = VoxelExists(x, y + 1, z) ? GetVoxelIndex(x, y+1, z) : -1;
+
+                            int x0y0z1 = VoxelExists(x, y, z + 1) ? GetVoxelIndex(x, y , z + 1) : -1;
+                            int x0y1z1 = VoxelExists(x, y + 1, z + 1) ? GetVoxelIndex(x, y + 1, z + 1) : -1;
+                            int x1y0z1 = VoxelExists(x + 1, y, z + 1) ? GetVoxelIndex(x+1, y, z + 1) : -1;
+
+                            int x1y1z1 = VoxelExists(x + 1, y + 1, z + 1) ? GetVoxelIndex(x + 1, y + 1, z + 1) : -1;
+
+                            // XY plane
+                            if (x1y0z0 >= 0 && x1y1z0 >= 0 && x0y1z0 >= 0 &&
+                                voxels[x1y0z0] == Voxel.Boundary &&
+                                voxels[x1y1z0] == Voxel.Boundary &&
+                                voxels[x0y1z0] == Voxel.Boundary)
+                            {
+                                if (x0y1z1 < 0 || voxels[x0y1z1] == Voxel.Outside ||
+                                    x0y0z1 < 0 || voxels[x0y0z1] == Voxel.Outside ||
+                                    x1y0z1 < 0 || voxels[x1y0z1] == Voxel.Outside ||
+                                    x1y1z1 < 0 || voxels[x1y1z1] == Voxel.Outside)
+                                {
+                                    tris.Add(vtxIndex[x0y0z0]);
+                                    tris.Add(vtxIndex[x1y0z0]);
+                                    tris.Add(vtxIndex[x0y1z0]);
+
+                                    tris.Add(vtxIndex[x0y1z0]);
+                                    tris.Add(vtxIndex[x1y0z0]);
+                                    tris.Add(vtxIndex[x1y1z0]);
+                                }
+                                else
+                                {
+                                    tris.Add(vtxIndex[x1y0z0]);
+                                    tris.Add(vtxIndex[x0y0z0]);
+                                    tris.Add(vtxIndex[x0y1z0]);
+
+                                    tris.Add(vtxIndex[x1y0z0]);
+                                    tris.Add(vtxIndex[x0y1z0]);
+                                    tris.Add(vtxIndex[x1y1z0]);
+                                }
+                            }
+
+                            // XZ plane
+                            if (x1y0z0 >= 0 && x1y0z1 >= 0 && x0y0z1 >= 0 &&
+                                voxels[x1y0z0] == Voxel.Boundary &&
+                                voxels[x1y0z1] == Voxel.Boundary &&
+                                voxels[x0y0z1] == Voxel.Boundary)
+                            {
+                                if (x0y1z0 < 0 || voxels[x0y1z0] == Voxel.Outside ||
+                                    x0y1z1 < 0 || voxels[x0y1z1] == Voxel.Outside ||
+                                    x1y1z0 < 0 || voxels[x1y1z0] == Voxel.Outside ||
+                                    x1y1z1 < 0 || voxels[x1y1z1] == Voxel.Outside)
+                                {
+                                    tris.Add(vtxIndex[x1y0z0]);
+                                    tris.Add(vtxIndex[x0y0z0]);
+                                    tris.Add(vtxIndex[x0y0z1]);
+
+                                    tris.Add(vtxIndex[x1y0z0]);
+                                    tris.Add(vtxIndex[x0y0z1]);
+                                    tris.Add(vtxIndex[x1y0z1]);
+                                }
+                                else
+                                {
+                                    tris.Add(vtxIndex[x0y0z0]);
+                                    tris.Add(vtxIndex[x1y0z0]);
+                                    tris.Add(vtxIndex[x0y0z1]);
+
+                                    tris.Add(vtxIndex[x0y0z1]);
+                                    tris.Add(vtxIndex[x1y0z0]);
+                                    tris.Add(vtxIndex[x1y0z1]);
+                                }
+                            }
+
+                            // XY plane
+                            if (x0y0z1 >= 0 && x0y1z1 >= 0 && x0y1z0 >= 0 &&
+                                voxels[x0y0z1] == Voxel.Boundary &&
+                                voxels[x0y1z1] == Voxel.Boundary &&
+                                voxels[x0y1z0] == Voxel.Boundary)
+                            {
+                                if (x1y0z0 < 0 || voxels[x1y0z0] == Voxel.Outside ||
+                                    x1y0z1 < 0 || voxels[x1y0z1] == Voxel.Outside ||
+                                    x1y1z0 < 0 || voxels[x1y1z0] == Voxel.Outside ||
+                                    x1y1z1 < 0 || voxels[x1y1z1] == Voxel.Outside)
+                                {
+                                    tris.Add(vtxIndex[x0y0z1]);
+                                    tris.Add(vtxIndex[x0y0z0]);
+                                    tris.Add(vtxIndex[x0y1z0]);
+
+                                    tris.Add(vtxIndex[x0y0z1]);
+                                    tris.Add(vtxIndex[x0y1z0]);
+                                    tris.Add(vtxIndex[x0y1z1]);
+                                }
+                                else
+                                {
+                                    tris.Add(vtxIndex[x0y0z0]);
+                                    tris.Add(vtxIndex[x0y0z1]);
+                                    tris.Add(vtxIndex[x0y1z0]);
+
+                                    tris.Add(vtxIndex[x0y1z0]);
+                                    tris.Add(vtxIndex[x0y0z1]);
+                                    tris.Add(vtxIndex[x0y1z1]);
+                                }
+                            }
+                        }
+
+            mesh.SetVertices(outputVertices);
+            mesh.SetIndices(tris, MeshTopology.Triangles, 0);
+            mesh.RecalculateNormals();
         }
 
         private IEnumerator FloodFill()
@@ -424,6 +603,5 @@ namespace Obi
 
             return !(Mathf.Max(-maxP, minP) > r);
         }
-
     }
 }

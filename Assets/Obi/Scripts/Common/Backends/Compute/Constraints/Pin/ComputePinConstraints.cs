@@ -32,5 +32,17 @@ namespace Obi
             batches.Remove(batch as ComputePinConstraintsBatch);
             batch.Destroy();
         }
+
+        public void RequestDataReadback()
+        {
+            foreach (var batch in batches)
+                batch.RequestDataReadback();
+        }
+
+        public void WaitForReadback()
+        {
+            foreach (var batch in batches)
+                batch.WaitForReadback();
+        }
     }
 }

@@ -118,6 +118,9 @@ namespace Obi
         {
             if (Camera.current != null)
             {
+                var blueprint = meshBasedEditor.blueprint as ObiMeshBasedActorBlueprint;
+                paintBrush.raycastTransform = blueprint != null ? Matrix4x4.TRS(Vector3.zero, blueprint.rotation, blueprint.scale) : Matrix4x4.identity;
+
                 paintBrush.raycastTarget = meshBasedEditor.sourceMesh;
                 paintBrush.DoBrush(editor.blueprint.positions);
             }

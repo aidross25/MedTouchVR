@@ -394,6 +394,10 @@ namespace Obi
             var dm = constraints[(int)Oni.ConstraintType.Distance] as ComputeDistanceConstraints;
             if (dm != null)
                 dm.RequestDataReadback();
+
+            var pm = constraints[(int)Oni.ConstraintType.Pin] as ComputePinConstraints;
+            if (pm != null)
+                pm.RequestDataReadback();
         }
 
         public void InitializeFrame(Vector4 translation, Vector4 scale, Quaternion rotation)
@@ -861,6 +865,10 @@ namespace Obi
             if (dm != null)
                 dm.WaitForReadback();
 
+            var pm = constraints[(int)Oni.ConstraintType.Pin] as ComputePinConstraints;
+            if (pm != null)
+                pm.WaitForReadback();
+
             abstraction.externalForces.WipeToZero();
             abstraction.externalTorques.WipeToZero();
             abstraction.externalForces.Upload();
@@ -944,14 +952,14 @@ namespace Obi
 
                 // Update positions:
                 solverShader.Dispatch(updatePositionsKernel, threadGroups, 1, 1);
-
-                // Update diffuse particles:
-                int substepsLeft = Mathf.RoundToInt(timeLeft / substepTime);
-                int foamPadding = Mathf.CeilToInt(abstraction.substeps / (float)abstraction.foamSubsteps);
-
-                if (substepsLeft % foamPadding == 0)
-                    UpdateDiffuseParticles(substepTime * foamPadding);
             }
+
+            // Update diffuse particles:
+            int substepsLeft = Mathf.RoundToInt(timeLeft / substepTime);
+            int foamPadding = Mathf.CeilToInt(abstraction.substeps / (float)abstraction.foamSubsteps);
+
+            if (substepsLeft % foamPadding == 0)
+                UpdateDiffuseParticles(substepTime * foamPadding);
 
             return handle;
         }

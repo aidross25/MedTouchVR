@@ -83,7 +83,17 @@ namespace Obi
             for (int i = 0; i < renderers.Count; ++i)
             {
                 renderers[i].renderParameters.layer = renderers[i].gameObject.layer;
-                batchList.Add(new InstancedRenderBatch(i, renderers[i].mesh, renderers[i].material, renderers[i].renderParameters));
+
+                // Create multiple batches of at most maxInstancesPerBatch particles each:
+                int instanceCount = 0;
+                while (instanceCount < renderers[i].actor.particleCount)
+                {
+                    var batch = new InstancedRenderBatch(i, renderers[i].mesh, renderers[i].material, renderers[i].renderParameters);
+                    batch.firstInstance = instanceCount;
+                    batch.instanceCount = Mathf.Min(renderers[i].actor.particleCount - instanceCount, Constants.maxInstancesPerBatch);
+                    instanceCount += batch.instanceCount;
+                    batchList.Add(batch);
+                }
             }
 
             // sort batches:
@@ -93,15 +103,14 @@ namespace Obi
             {
                 var batch = batchList[i];
                 var renderer = renderers[batch.firstRenderer];
-                int actorParticleCount = renderer.actor.particleCount;
-
-                batch.firstInstance = activeParticles.count;
-                batch.instanceCount = actorParticleCount;
+                int particlesSoFar = activeParticles.count;
 
                 // add active particles here, respecting batch order:
-                activeParticles.AddRange(renderer.actor.solverIndices, actorParticleCount);
+                activeParticles.AddRange(renderer.actor.solverIndices, batch.firstInstance, batch.instanceCount);
+                rendererIndex.AddReplicate(i, batch.instanceCount);
                 rendererData.Add(new ParticleRendererData(renderer.instanceColor, renderer.instanceScale));
-                rendererIndex.AddReplicate(i, actorParticleCount);
+
+                batch.firstInstance = particlesSoFar;
             }
 
             instanceTransforms.ResizeUninitialized(activeParticles.count);

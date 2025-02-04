@@ -86,7 +86,7 @@ namespace Obi
 
                 Matrix4x4 tfrm = float4x4.TRS(renderablePositions[p].xyz,
                                               renderableOrientations[p],
-                                              renderableRadii[p].xyz * rendererData[rendererIndex[i]].radiusScale);
+                                              renderableRadii[p].xyz * renderableRadii[p][3] * rendererData[rendererIndex[i]].radiusScale);
 
                 instanceTransforms[i] = math.mul(solverToWorld, tfrm);
 

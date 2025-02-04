@@ -229,7 +229,8 @@ namespace Obi
             RenderTexture.active = tempRT;
 
             GL.PushMatrix();
-            GL.LoadProjectionMatrix(Matrix4x4.Ortho(0, 1, 0, 1, -1, 1));
+
+            var proj = Matrix4x4.Ortho(0, 1, 0, 1, -1, 1);            if (Camera.current != null) proj = proj * Camera.current.worldToCameraMatrix.inverse;            GL.LoadProjectionMatrix(proj);
 
             Color[] colors = new Color[sourceMesh.vertexCount];
             for (int i = 0; i < colors.Length; i++)

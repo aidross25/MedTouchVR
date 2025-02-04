@@ -523,6 +523,13 @@ namespace Obi
             CopyFrom(array, 0, appendAt, length);
         }
 
+        public void AddRange(ObiNativeList<T> array, int start, int length)
+        {
+            int appendAt = m_Count;
+            ResizeUninitialized(m_Count + length);
+            CopyFrom(array, start, appendAt, length);
+        }
+
         public void AddRange(ObiNativeList<T> array)
         {
             AddRange(array, array.count);

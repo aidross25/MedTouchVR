@@ -338,7 +338,7 @@ namespace Obi
                 linearTransforms[i] = math.mul(Apq_def, Aqq[i]);
 
                 // extract rotation from transform matrix, using warmstarting and few iterations:
-                constraintOrientations[i] = BurstMath.ExtractRotation(Apq_def, constraintOrientations[i], 2);
+                constraintOrientations[i] = BurstMath.ExtractRotation(Apq_def, constraintOrientations[i], 5);
 
                 // finally, obtain rotation matrix:
                 float4x4 R = constraintOrientations[i].toMatrix();
