@@ -49,7 +49,6 @@ using Obi;
  Caleb Pope, Capstone Intern of MIE 01/07/2025
 */
 
-
 namespace Haply.Samples.Tutorials._2_BasicForceFeedback
 {
     public class MeshForceSoftbody : MonoBehaviour
@@ -65,14 +64,15 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
 
 
         //Inverse3 for Force Feedback
-        public Inverse3 inverse3;
+        //public Inverse3 inverse3;
 
 
         //VerseGrip to use the button (which happens to be on the haptic device)
-        public VerseGrip versegripController;
+        //public VerseGrip versegripController;
 
 
-
+        //HaplyXRController for inverse3 and versegripController
+        public HaplyInverseXRController haplyController; 
 
 
 
@@ -718,6 +718,10 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
         {
             //this basically says that you're going to hand off an action (calculating force) to QueueMainThreadAction
             //its a lambda
+            var force = ForceCalculation(device.CursorLocalPosition, device.CursorLocalVelocity,
+                _cursorRadius, _ballPosition, _ballRadius);
+
+            device.CursorSetLocalForce(force);
            
         }
 
