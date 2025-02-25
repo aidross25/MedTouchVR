@@ -54,19 +54,24 @@ namespace Obi
 
         public int AddSkeleton(Transform[] bones, Matrix4x4 worldToSolver)
         {
-            skeletonData.Add(new SkeletonData
+            var data = new SkeletonData
             {
                 firstBone = bonePositions.count,
-                boneCount = bones.Length
-            });
+            };
 
             foreach (var bone in bones)
             {
-                bonePositions.Add(bone.position);
-                boneRotations.Add(bone.rotation);
-                boneScales.Add(bone.localScale);
+                if (bone != null)
+                {
+                    bonePositions.Add(bone.position);
+                    boneRotations.Add(bone.rotation);
+                    boneScales.Add(bone.localScale);
+                }
             }
 
+            data.boneCount = bonePositions.count;
+
+            skeletonData.Add(data);
             world2Solver.Add(worldToSolver);
 
             return skeletonData.count - 1;
@@ -83,10 +88,13 @@ namespace Obi
 
         public void SetBoneTransform(int index, int boneIndex, Transform transform)
         {
-            var i = skeletonData[index].firstBone + boneIndex;
-            bonePositions[i] = transform.position;
-            boneScales[i] = transform.localScale;
-            boneRotations[i] = transform.rotation;
+            if (transform != null)
+            {
+                var i = skeletonData[index].firstBone + boneIndex;
+                bonePositions[i] = transform.position;
+                boneScales[i] = transform.localScale;
+                boneRotations[i] = transform.rotation;
+            }
         }
 
         public void UpdateBoneTransformsCompute()

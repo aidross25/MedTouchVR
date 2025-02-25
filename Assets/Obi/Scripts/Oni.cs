@@ -177,7 +177,7 @@ public static class  Oni
             maxDepenetration = 10;
             sleepThreshold = 0.0005f;
             maxVelocity = 50.0f;
-            maxAngularVelocity = 10.0f;
+            maxAngularVelocity = 20.0f;
             collisionMargin = 0.02f;
             colliderCCD = 1;
             particleCCD = 0;

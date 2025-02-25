@@ -34,7 +34,7 @@ void UpdateParticleInstances (uint3 id : SV_DispatchThreadID)
 
     float4x4 tfrm = TRS(renderablePositions[p].xyz,
                         renderableOrientations[p],
-                        renderableRadii[p].xyz * rendererData[rendererIndex[i]].radiusScale);
+                        renderableRadii[p].xyz * renderableRadii[p][3] * rendererData[rendererIndex[i]].radiusScale);
 
     instanceTransforms[i] = mul(solverToWorld, tfrm);
 

@@ -126,5 +126,15 @@ namespace Obi
             }
         }
 
+        public void RequestDataReadback()
+        {
+            lambdasList.Readback();
+        }
+
+        public void WaitForReadback()
+        {
+            lambdasList.WaitForReadback();
+        }
+
     }
 }
