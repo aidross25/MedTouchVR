@@ -28,7 +28,7 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
 
         //Stiffness Scalar "acts like a spring, generating more force the more it is compressed." -https://docs.haply.co/inverseSDK/2.2.0/unity/tutorials/basic-force-feedback
         [Range(0, 100000)]
-        public float stiffness = 100f;
+        public float stiffness = 1f;
 
         //Damping Scalar "represents an object's resistance to movement, offering more resistance the faster it is moved through"
         [Range(0, 5)]
@@ -432,51 +432,56 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
             // Get obi instance
             var world = ObiColliderWorld.GetInstance();
             var tempForces = 0;
+            var mostPenetration = 0f;
+            Vector3 contactNormal = Vector3.zero;
 
             // just iterate over all contacts in the current frame:
             foreach (Oni.Contact contact in e)
             {
                 tempForces++;
                 // account for cursor model size in distance
-                var penetration = _cursorRadius.x - contact.distance;
+                var penetration = _cursorRadius.x + contact.distance;
+
+                
 
                 // if this one is an actual collision:
-                if (penetration < 0)
+                if (penetration < mostPenetration)
                 {
                     ObiColliderBase col = world.colliderHandles[contact.bodyB].owner;
                     if (col != null && col.gameObject.CompareTag("haply"))
                     {
                         // get the index of the particle involved in the contact:
                         int particleIndex = solver.simplices[contact.bodyA];
+                        contactNormal = contact.normal;
 
-                        // The depth, direction (particle contact normal) and stiffness of the penetration positively correlates to the force applied
-                        Vector3 tempForce = contact.normal * penetration * stiffness;
-
-                        // This mimics friction
-                        // The velocity and damping negatively correlate to the force applied (only subtracted from the original force)
-                        tempForce -= inverse3.CursorLocalVelocity * damping;
-
-                        // Apply a gentle repulsion to prevent clipping, without pushing the cursor too far
-                        tempForce = contact.normal * -0.1f; // Slight force to prevent penetration
-
-                        // Accumulate the calculated force
-                        force += tempForce;
+                        mostPenetration = penetration;
                     }
                 }
             }
+            
 
-            // Assign the accumulated force to the global current force variable
-            _calculatedForce = force;
-            Debug.Log("Calculated Force: " + _calculatedForce);
+            // The depth, direction (particle contact normal) and stiffness of the penetration positively correlates to the force applied
+            Vector3 tempForce = contactNormal * mostPenetration * stiffness;
+
+            // This mimics friction
+            // The velocity and damping negatively correlate to the force applied (only subtracted from the original force)
+            tempForce -= inverse3.CursorLocalVelocity * damping;
+            
+
+            // Apply a gentle repulsion to prevent clipping, without pushing the cursor too far
+            tempForce = contactNormal * -0.1f; // Slight force to prevent penetration
+
+            Debug.Log("Calculated Force: " + tempForce);
+            // Queue the action to apply the force on the main thread
+            QueueMainThreadAction(() =>
+            {
+                inverse3.CursorSetLocalForce(tempForce);
+            });
 
             // Signal that the force has been calculated for this frame
             _forceCalculated = true;
 
-            // Queue the action to apply the force on the main thread
-            QueueMainThreadAction(() =>
-            {
-                inverse3.CursorSetLocalForce(_calculatedForce);
-            });
+            
         }
 
         #endregion

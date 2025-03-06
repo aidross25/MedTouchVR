@@ -1113,7 +1113,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 7a9110b0d7a90544fbcd15ac9e2aa171, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  selectedDeviceId: 263355
+  selectedDeviceId: 0
   DeviceOpened:
     m_PersistentCalls:
       m_Calls: []
@@ -1159,7 +1159,7 @@ MonoBehaviour:
       m_Calls: []
   cursor: {fileID: 1850300551}
   body: {fileID: 531438282}
-  selectedHandedness: 0
+  selectedHandedness: 1
   PowerSupplyStatusChanged:
     m_PersistentCalls:
       m_Calls: []
@@ -1615,8 +1615,8 @@ MonoBehaviour:
   centerBatch: -1
   centerShape: -1
   _shapeMatchingConstraintsEnabled: 1
-  _deformationResistance: 0.292
-  _maxDeformation: 0.658
+  _deformationResistance: 0.9
+  _maxDeformation: 0.056
   _plasticYield: 0
   _plasticCreep: 0
   _plasticRecovery: 0
@@ -1707,7 +1707,7 @@ MonoBehaviour:
   inverse3: {fileID: 531438280}
   versegripController: {fileID: 531438278}
   solver: {fileID: 1396485765}
-  stiffness: 300
+  stiffness: 1000
   damping: 1
   jointPrefab: {fileID: 720512893}
   jointSize: 0
@@ -389553,52 +389553,6 @@ MonoBehaviour:
   - 1
   - 1
   <sourceMesh>k__BackingField: {fileID: 816343263715038232, guid: fd54b9aa083f3da40bfc5bf042ba09d1, type: 3}
---- !u!1 &1006787115
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 1006787117}
-  - component: {fileID: 1006787116}
-  m_Layer: 0
-  m_Name: BurstCollisionWorld
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!114 &1006787116
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1006787115}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: f1a161c4294214a4fbcb7e9e94800494, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  cellSpans:
-    m_AlignBytes: 16
---- !u!4 &1006787117
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1006787115}
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 0}
-  m_RootOrder: 6
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1055579698
 GameObject:
   m_ObjectHideFlags: 0
@@ -390880,6 +390834,52 @@ Material:
     - _Color: {r: 0, g: 1, b: 0, a: 1}
     - _EmissionColor: {r: 0, g: 0, b: 0, a: 1}
   m_BuildTextureStacks: []
+--- !u!1 &1776383942
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1776383944}
+  - component: {fileID: 1776383943}
+  m_Layer: 0
+  m_Name: BurstCollisionWorld
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1776383943
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1776383942}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f1a161c4294214a4fbcb7e9e94800494, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  cellSpans:
+    m_AlignBytes: 16
+--- !u!4 &1776383944
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1776383942}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_RootOrder: 6
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1789534977
 GameObject:
   m_ObjectHideFlags: 0
