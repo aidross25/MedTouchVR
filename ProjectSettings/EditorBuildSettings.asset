@@ -12,11 +12,20 @@ EditorBuildSettings:
     path: Assets/Samples/Haply Inverse for Unity/2.2.0/Tutorials/1_ForceAndPosition/ForceAndPosition.unity
     guid: 42ea5f036ce887b40b66f2a125ee92ee
   - enabled: 1
-    path: Assets/Scenes/mainMenu.unity
+    path: Assets/Scenes/startMenu.unity
     guid: 19978608db97b514991070cdad006005
   - enabled: 1
     path: Assets/Scenes/operatingRoom.unity
     guid: 22467836205d2734694b570cd4c9a2f7
+  - enabled: 1
+    path: Assets/Scenes/moduleOne.unity
+    guid: 85c1593460a4914499832e982081f259
+  - enabled: 1
+    path: Assets/Scenes/endMenu.unity
+    guid: ae60acd4c84bf7c4486c505bf03399f1
+  - enabled: 1
+    path: Assets/Scenes/moduleTwo.unity
+    guid: 26fb6455e4312dc4daab1bd1453f79bd
   m_configObjects:
     com.unity.xr.management.loader_settings: {fileID: 11400000, guid: db0291e500e49be4f97c82f4fc1ca8ae, type: 2}
     com.unity.xr.openxr.settings4: {fileID: 11400000, guid: 060985cec78ed6f45b5e3abbc047ba38, type: 2}
