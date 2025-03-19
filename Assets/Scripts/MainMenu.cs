@@ -1,21 +1,17 @@
-using System;
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.SceneManagement;
-using UnityEngine.UIElements;
 using System.Threading.Tasks;
 
 public class MainMenu : MonoBehaviour
 {
     public AudioSource clickSound;    // Reference to the AudioSource component for the click sound
 
-    public async void PlayGame() {
+    public async void PlayGame(string sceneName) {
         if (clickSound != null) {
             clickSound.Play();
             await WaitForSoundToFinish(clickSound);
         }
-        SceneManager.LoadScene("operatingRoom");
+        SceneManager.LoadScene(sceneName);
     }
 
     public async void QuitGame() {
@@ -32,7 +28,6 @@ public class MainMenu : MonoBehaviour
             await WaitForSoundToFinish(clickSound);
         }
     }
-
     private async Task WaitForSoundToFinish(AudioSource audioSource) {
         while (audioSource.isPlaying) {
             await Task.Yield();
