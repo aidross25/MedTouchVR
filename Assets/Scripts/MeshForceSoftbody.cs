@@ -118,16 +118,6 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
         //"Subscribes to the DeviceStateChanged event." -https://docs.haply.co/inverseSDK/2.2.0/unity/tutorials/basic-force-feedback
         private void OnEnable()
         {
-            //We use "+=" as a way to signal that we're "adding" the RHS as a delegate (another thing to do when the LHS gets called)
-            //inverse3.DeviceStateChanged += OnDeviceStateChanged;
-
-            //also subscribe to versegrip button events
-            //This has different syntax because the inverse3 was called using C#'s Event/Delegate functionality, but this is called through a UnityEvent.
-            //The difference is that there are more functionalities available in the inspector for UnityEvent (easier function binding)
-            //versegripController.ButtonDown.AddListener(OnButtonDown);
-            //versegripController.ButtonUp.AddListener(OnButtonUp);
-
-            //Sub to solver collision event
             solver.OnCollision += Solver_OnCollision;
             Debug.Log("Solver: " + solver);
         }
@@ -135,216 +125,18 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
         //"Unsubscribes from the DeviceStateChanged event." - https://docs.haply.co/inverseSDK/2.2.0/unity/tutorials/basic-force-feedback
         private void OnDisable()
         {
-            //Remove OnDeviceStateChanged from DeviceStateChanged Event
-            //inverse3.DeviceStateChanged -= OnDeviceStateChanged;
             inverse3.Release();
-
-            // Unsubscribe from Versegrip button events
-            // versegripController.ButtonDown.RemoveListener(OnButtonDown);
-            // versegripController.ButtonUp.RemoveListener(OnButtonUp);
-
-            //unsub from solver collision event
             solver.OnCollision -= Solver_OnCollision;
         }
 
         #endregion
-
-        #region Handle Force
-
-        //The one and only force calculating function lol
-        // //Calculates force based on whether a ray  (which is the need for raycast)
-        // private void CalculateForceOnMainThread(Vector3 cursorPosition, Vector3 cursorVelocity, Vector3 cursorRadius, object sender, ObiNativeContactList e)
-        // {
-
-        // }  
-
-        //Main force calculation function
-        
-
-        #endregion
-
-        #region manage threadPartitions and joints
-
-        //Creates a joint at the collision point (referred to as "closestPoint" in the CalculateForceOnMainThread function)
-        // private void CreateJointAtCollisionPoint(Vector3 collisionPoint)
-        // {
-        //     //check to make sure we have an asset for the joint.
-        //     if (jointPrefab != null)
-        //     {
-        //         //create a joint with an asset of jointPrefab, at collisionPoint, and a rotation of Quaternion.identity (no rotation)
-        //         GameObject joint = Instantiate(jointPrefab, collisionPoint, Quaternion.identity);
-
-        //         //scale the joint to joint size (but multiply by a vector so it's in the right format)
-        //         joint.transform.localScale = Vector3.one * jointSize;
-
-        //         //put in data structure (so we can delete all joints if we double-click)
-        //         _joints.Add(joint);
-
-        //         // Only create a threadPartition if this is not the first joint
-        //         if (lastJoint != null)
-        //         {
-        //             //call that function
-        //             CreatethreadPartitionsBetweenJoints(lastJoint, joint);
-        //         }
-
-        //         // Update the last joint to know where to make the next threadPartition
-        //         lastJoint = joint;
-        //     }
-        //     //if we don't have an asset for the joint throw a warning
-        //     else
-        //     {
-        //         Debug.LogWarning("Joint Prefab is not assigned in the inspector.");
-        //     }
-        // }
-
-
-
-
-
-
-
-
-
-
-    //     //Creates threadpartitions. Called in CreateJointAtCollisionPoint
-    //     //need the start and end joint to know where to make the thread partition
-    //     private void CreatethreadPartitionsBetweenJoints(GameObject startJoint, GameObject endJoint)
-    //     {
-    //         //get the positions of the joints
-    //         Vector3 start = startJoint.transform.position;
-    //         Vector3 end = endJoint.transform.position;
-
-
-    //         //get the distance between start and end joints
-    //         float vectorDistance = Vector3.Distance(start, end);
-
-
-    //         //Make a new threadPartition (which is just a cylinder)
-    //         GameObject threadPartition = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-
-
-    //         //Make sure we don't inherit anything by mistake
-    //         threadPartition.transform.SetParent(null);
-
-
-    //         //Start the threadPartition in the middle of the two joints
-    //         threadPartition.transform.position = (start + end) / 2f;
-
-
-    //         //Set the rotation of the threadPartition to be the direction of end to start (or start to end, doesn't matter)
-    //         //Normalize it because we don't care about the magnitude of the vector
-    //         threadPartition.transform.up = (end - start).normalized;
-
-
-
-
-
-
-
-
-
-
-
-
-    //         //create the dimensions of the threadPartition
-    //         threadPartition.transform.localScale = new Vector3(
-    //             //x-radius is how thick we want the threadPartition
-    //             threadPartitionDiameter,
-
-
-    //             //height (y-RADIUS) of threadPartition (which is the distance between start and end divided by 2))
-    //             vectorDistance / 2f,
-
-
-    //             //z-radius is how thick we want the threadPartition
-    //             threadPartitionDiameter);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    //         //get the renderer of the threadPartition
-    //         Renderer renderer = threadPartition.GetComponent<Renderer>();
-
-
-    //         //make sure we don't throw and error my checking for null reference
-    //         if (renderer != null)
-    //         {
-    //             //color the threadPartition
-    //             renderer.material.color = threadPartitionColor;
-    //         }
-
-
-    //         //put in data structure (so we can delete them all if we need)
-    //         _threadPartitions.Add(threadPartition);
-    //     }
-
-
-
-
-
-
-    //     //Get rid of joints and threadPartitions
-    //     //Called in OnButtonDown (subscribed to versegrip button down UnityEvent)
-    //     private void DeleteAllthreadPartitionsAndJoints()
-    //     {
-    //         //simple for every threadPartition
-    //         foreach (var threadPartition in _threadPartitions)
-    //         {
-    //             //destroy me
-    //             Destroy(threadPartition);
-    //         }
-    //         //flash the threadPartition data structure
-    //         _threadPartitions.Clear();
-
-
-
-
-
-
-    //         //now do the same thing but with joints VVVVVVV
-
-
-    //         foreach (var joint in _joints)
-    //         {
-    //             Destroy(joint);
-    //         }
-    //         _joints.Clear();
-    //     }
-
-
-
-
-
-
-   #endregion
-
-
-
-
     #region Manage Versegrip button
 
 
     //subscribed to versegrip button down unityEvent
     //Make sure to get the versegrip and button
    
-
-       
     #endregion
-
-
-
-
-
 
     #region Updating Functions
 
@@ -368,45 +160,8 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
                 //do that action
                 action.Invoke();
             }
-
-
-            // //if we have calculated the current force
-            // if (_forceCalculated)
-            // {
-            //     //tell the inverse to execute the force
-            // inverse3.CursorSetLocalForce(_calculatedForce);
-
-
-            //     //say we no longer have calculated the (next) current force
-            //     _forceCalculated = false;
-            // }
             
         }
-
-
-
-
-        //when Inverse3 changes
-        // private void OnDeviceStateChanged(Inverse3 device)
-        // {
-
-
-        //     Debug.Log("Device State Changed");
-        //     if(!device.IsReady)
-        //     {
-        //         return;
-        //     } else if(!_forceCalculated)
-        //     {
-        //         //CalculateForceOnMainThread(device.CursorLocalPosition, device.CursorLocalVelocity, _cursorRadius, this, null);
-
-        //     } else {
-        //         device.CursorSetLocalForce(_calculatedForce);
-        //     }
-            
-        // }
-
-
-
 
         // //Function that puts an action into the main thread.
         private void QueueMainThreadAction(Action action)
@@ -428,7 +183,7 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
 
             // Initialize Current Force with 0. This will be changed throughout the gameloop
             var force = Vector3.zero;
-
+            var pent = false;
             // Get obi instance
             var world = ObiColliderWorld.GetInstance();
             var tempForces = 0;
@@ -441,9 +196,6 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
                 tempForces++;
                 // account for cursor model size in distance
                 var penetration = _cursorRadius.x + contact.distance;
-
-                
-
                 // if this one is an actual collision:
                 if (penetration < mostPenetration)
                 {
@@ -453,8 +205,8 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
                         // get the index of the particle involved in the contact:
                         int particleIndex = solver.simplices[contact.bodyA];
                         contactNormal = contact.normal;
-
                         mostPenetration = penetration;
+                        pent = true;
                     }
                 }
             }
@@ -468,15 +220,12 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
             tempForce -= inverse3.CursorLocalVelocity * damping;
             
 
-            // Apply a gentle repulsion to prevent clipping, without pushing the cursor too far
-            tempForce = contactNormal * -0.1f; // Slight force to prevent penetration
-
             Debug.Log("Calculated Force: " + tempForce);
             // Queue the action to apply the force on the main thread
-            QueueMainThreadAction(() =>
-            {
-                inverse3.CursorSetLocalForce(tempForce);
-            });
+            // QueueMainThreadAction(() =>
+            // {
+            if(pent) inverse3.CursorSetLocalForce(tempForce);
+            // });
 
             // Signal that the force has been calculated for this frame
             _forceCalculated = true;
