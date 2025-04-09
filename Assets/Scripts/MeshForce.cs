@@ -229,129 +229,129 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
 
         //The one and only force calculating function lol
         //Calculates force based on whether a ray  (which is the need for raycast)
-        private void CalculateForceOnMainThread(Vector3 cursorPosition, Vector3 cursorVelocity, Vector3 cursorRadius, MeshCollider meshCollider)
-        {
-            //Initialize Current Force with 0. This will be changed throughout the gameloop
-            var force = Vector3.zero;
+        // private void CalculateForceOnMainThread(Vector3 cursorPosition, Vector3 cursorVelocity, Vector3 cursorRadius, MeshCollider meshCollider)
+        // {
+        //     //Initialize Current Force with 0. This will be changed throughout the gameloop
+        //     var force = Vector3.zero;
 
-            //Initialize a list of rays with which we will calculate collision. 
-            List<Ray> _rays = new List<Ray>();
-
-
-            //These nested for loops are a performance hog (duh)
-            //We'll have to brainstorm how to really tell if we're touching something without clipping
-            //for -1, 0 and 1 of X
-            for (int i = -1; i < 2; i++){
-                //for -1, 0 and 1 of Y
-                for(int j = -1; j < 2; j++){
-                    //for -1, 0 and 1 of Z
-                    for(int k = -1; k < 2; k++){
-                        //Start it at the cursor, and point it in all cardinal and ordinal directions.
-                        _rays.Add(new Ray(cursorPosition, new Vector3(i,j,k)));
-                    }
-                }
-            }
+        //     //Initialize a list of rays with which we will calculate collision. 
+        //     List<Ray> _rays = new List<Ray>();
 
 
-            //Initialize a flag on whether a ray hit
-            int rayFound = 0;
-
-            //Closest Distance
-            float closestRayDistance = Mathf.Infinity;
-
-            //Initialize closest point where we hit a ray
-            Vector3 closestPoint = new Vector3(0,0,0);
-
-            //Initialize closest ray's normal
-            Vector3 closestNormal = new Vector3(0,0,0);
-
-            //Calculate each ray...
-            foreach (var ray in _rays)
-            {
-                //Initialize a point where the collision ray was hit. 
-                RaycastHit hitInfo;
-
-                //Shoot the ray and save if/where it hit on the mesh
-                if(_meshCollider.Raycast(ray, out hitInfo, Mathf.Infinity)){
-                    //Yes, a ray was found
-                    rayFound = 1;
-
-                    //Create a vector on the point of the meshCollider where our ray hit
-                    Vector3 closePoint = hitInfo.point;
-
-                    //Create a vector which is the normal (orthogonal vector) of the point on the mesh collider we hit.
-                    Vector3 normal = hitInfo.normal;
-
-                    //Calculate the distance between the middle of the cursor and the point of the meshCollider where our ray hit
-                    float distance = Vector3.Distance(cursorPosition, closePoint);
-
-                    //if this ray's distance is the smallest out of all of them...
-                    if(distance < closestRayDistance){
-                        //It's the new closest distance
-                        closestRayDistance = distance;
-
-                        //Update closestPoint to the closest ray
-                        closestPoint = closePoint;
-
-                        //Update closestNormal to the closest ray
-                        closestNormal = normal;
-                    }
-                }
-            }
+        //     //These nested for loops are a performance hog (duh)
+        //     //We'll have to brainstorm how to really tell if we're touching something without clipping
+        //     //for -1, 0 and 1 of X
+        //     for (int i = -1; i < 2; i++){
+        //         //for -1, 0 and 1 of Y
+        //         for(int j = -1; j < 2; j++){
+        //             //for -1, 0 and 1 of Z
+        //             for(int k = -1; k < 2; k++){
+        //                 //Start it at the cursor, and point it in all cardinal and ordinal directions.
+        //                 _rays.Add(new Ray(cursorPosition, new Vector3(i,j,k)));
+        //             }
+        //         }
+        //     }
 
 
+        //     //Initialize a flag on whether a ray hit
+        //     int rayFound = 0;
+
+        //     //Closest Distance
+        //     float closestRayDistance = Mathf.Infinity;
+
+        //     //Initialize closest point where we hit a ray
+        //     Vector3 closestPoint = new Vector3(0,0,0);
+
+        //     //Initialize closest ray's normal
+        //     Vector3 closestNormal = new Vector3(0,0,0);
+
+        //     //Calculate each ray...
+        //     foreach (var ray in _rays)
+        //     {
+        //         //Initialize a point where the collision ray was hit. 
+        //         RaycastHit hitInfo;
+
+        //         //Shoot the ray and save if/where it hit on the mesh
+        //         if(_meshCollider.Raycast(ray, out hitInfo, Mathf.Infinity)){
+        //             //Yes, a ray was found
+        //             rayFound = 1;
+
+        //             //Create a vector on the point of the meshCollider where our ray hit
+        //             Vector3 closePoint = hitInfo.point;
+
+        //             //Create a vector which is the normal (orthogonal vector) of the point on the mesh collider we hit.
+        //             Vector3 normal = hitInfo.normal;
+
+        //             //Calculate the distance between the middle of the cursor and the point of the meshCollider where our ray hit
+        //             float distance = Vector3.Distance(cursorPosition, closePoint);
+
+        //             //if this ray's distance is the smallest out of all of them...
+        //             if(distance < closestRayDistance){
+        //                 //It's the new closest distance
+        //                 closestRayDistance = distance;
+
+        //                 //Update closestPoint to the closest ray
+        //                 closestPoint = closePoint;
+
+        //                 //Update closestNormal to the closest ray
+        //                 closestNormal = normal;
+        //             }
+        //         }
+        //     }
 
 
 
 
-            //if our ray (ray), extending all the way to infinity (Mathf.Infinity) hits something, then it will return the RaycastHit object to hitInfo
-            if (rayFound == 1)
-            {
-                //Calculates how deep we are in the patient (if at all). Accounts for size of cursor sphere. 
-                //cursorRadius.x is the radius of the sphere (we can use x because we know it's a uniform sphere). 
-                // penetration > 0 means we're touching the sphere (or the closestPoint is in the sphere) because distance is closer to the center than the surface of our cursor.
-                // penetration <= 0 means we're not touching the sphere because the distance to the center of the sphere (from the closestPoint) is further than the surface of the sphere.  
-                float penetration = cursorRadius.x - closestRayDistance;
-
-                // As stated above, if penetration > 0, we are in the patient, and have to apply a force. 
-                // If we're outside the patient, we don't have to apply a force
-                if (penetration > 0)
-                {
-                    //The deeper, more orthogonal and stiffness of the penetration positively correlates to the force applied
-                    force = closestNormal * penetration * stiffness;
-
-                    //This mimics friction
-                    //The velocity and damping negatively correlate to the force applied (only subtracted from the original force)
-                    force -= cursorVelocity * damping;
 
 
+        //     //if our ray (ray), extending all the way to infinity (Mathf.Infinity) hits something, then it will return the RaycastHit object to hitInfo
+        //     if (rayFound == 1)
+        //     {
+        //         //Calculates how deep we are in the patient (if at all). Accounts for size of cursor sphere. 
+        //         //cursorRadius.x is the radius of the sphere (we can use x because we know it's a uniform sphere). 
+        //         // penetration > 0 means we're touching the sphere (or the closestPoint is in the sphere) because distance is closer to the center than the surface of our cursor.
+        //         // penetration <= 0 means we're not touching the sphere because the distance to the center of the sphere (from the closestPoint) is further than the surface of the sphere.  
+        //         float penetration = cursorRadius.x - closestRayDistance;
+
+        //         // As stated above, if penetration > 0, we are in the patient, and have to apply a force. 
+        //         // If we're outside the patient, we don't have to apply a force
+        //         if (penetration > 0)
+        //         {
+        //             //The deeper, more orthogonal and stiffness of the penetration positively correlates to the force applied
+        //             force = closestNormal * penetration * stiffness;
+
+        //             //This mimics friction
+        //             //The velocity and damping negatively correlate to the force applied (only subtracted from the original force)
+        //             force -= cursorVelocity * damping;
 
 
-                    // If we're pressing (from versegrip OnButtonDown UnityEvent), and the time since we last created a joint is
-                    //greater than or equal to our minumum elapsed time to create a joint...
-                    if (isPressing && Time.time - _lastJointCreationTime >= creationInterval)
-                    {
-                        //Create a joint on the mesh where we hit
-                        CreateJointAtCollisionPoint(closestPoint);
 
-                        //set the last created time to now
-                        _lastJointCreationTime = Time.time;
-                    }
-                }
-                else
-                {
-                    // Apply a gentle repulsion to prevent clipping, without pushing the cursor too far
-                    force = closestNormal * -0.1f; // Slight force to prevent penetration
-                }
+
+        //             // If we're pressing (from versegrip OnButtonDown UnityEvent), and the time since we last created a joint is
+        //             //greater than or equal to our minumum elapsed time to create a joint...
+        //             if (isPressing && Time.time - _lastJointCreationTime >= creationInterval)
+        //             {
+        //                 //Create a joint on the mesh where we hit
+        //                 CreateJointAtCollisionPoint(closestPoint);
+
+        //                 //set the last created time to now
+        //                 _lastJointCreationTime = Time.time;
+        //             }
+        //         }
+        //         else
+        //         {
+        //             // Apply a gentle repulsion to prevent clipping, without pushing the cursor too far
+        //             force = closestNormal * -0.1f; // Slight force to prevent penetration
+        //         }
             
-            }
-            //assign our global current force variable to our calculated force            
-            _calculatedForce = force;
+        //     }
+        //     //assign our global current force variable to our calculated force            
+        //     _calculatedForce = force;
 
-            //this is a safety feature. It signals whether or not we have calculated the force this frame. 
-            //Because we use parallel processing, we need to make sure we're not running into any race conditions
-            _forceCalculated = true;
-        }
+        //     //this is a safety feature. It signals whether or not we have calculated the force this frame. 
+        //     //Because we use parallel processing, we need to make sure we're not running into any race conditions
+        //     _forceCalculated = true;
+        //    }
     #endregion
 
     #region manage threadPartitions and joints
@@ -575,21 +575,21 @@ namespace Haply.Samples.Tutorials._2_BasicForceFeedback
         {
             //this basically says that you're going to hand off an action (calculating force) to QueueMainThreadAction
             //its a lambda
-            QueueMainThreadAction(() =>
-            {
-                //calculate force
-                CalculateForceOnMainThread(device.CursorLocalPosition, device.CursorLocalVelocity, _cursorRadius, _meshCollider);
-            });
+            // QueueMainThreadAction(() =>
+            // {
+            //     //calculate force
+            //     CalculateForceOnMainThread(device.CursorLocalPosition, device.CursorLocalVelocity, _cursorRadius, _meshCollider);
+            // });
         }
 
         //Function that puts an action into the main thread.
         private void QueueMainThreadAction(Action action)
         {
             //assure no race conditions
-            lock (_mainThreadActions)
-            {
-                _mainThreadActions.Enqueue(action);
-            }
+            // lock (_mainThreadActions)
+            // {
+            //     _mainThreadActions.Enqueue(action);
+            // }
         }
 
     #endregion
