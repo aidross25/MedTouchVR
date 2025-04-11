@@ -1,0 +1,44 @@
+﻿#pragma kernel UpdateParticleInstances
+
+#include "PathFrame.cginc"
+
+struct RendererData
+{
+    float4 color;
+    float radiusScale;
+};
+
+StructuredBuffer<int> activeParticles;
+StructuredBuffer<RendererData> rendererData;
+StructuredBuffer<int> rendererIndex;
+
+StructuredBuffer<float4> renderablePositions;
+StructuredBuffer<quaternion> renderableOrientations;
+StructuredBuffer<float4> renderableRadii;
+StructuredBuffer<float4> colors;
+float4x4 solverToWorld;
+
+RWStructuredBuffer<float4x4> instanceTransforms;
+RWStructuredBuffer<float4x4> invInstanceTransforms;
+RWStructuredBuffer<float4> instanceColors;
+
+uint particleCount;
+
+[numthreads(128, 1, 1)]
+void UpdateParticleInstances (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+    if (i >= particleCount) return;
+
+    int p = activeParticles[i];
+
+    float4x4 tfrm = TRS(renderablePositions[p].xyz,
+                        renderableOrientations[p],
+                        renderableRadii[p].xyz * renderableRadii[p][3] * rendererData[rendererIndex[i]].radiusScale);
+
+    instanceTransforms[i] = mul(solverToWorld, tfrm);
+
+    instanceColors[i] = colors[p] * rendererData[rendererIndex[i]].color;
+    
+    invInstanceTransforms[i] = Inverse(instanceTransforms[i]);
+}

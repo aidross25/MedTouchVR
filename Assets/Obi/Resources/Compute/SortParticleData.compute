@@ -1,0 +1,30 @@
+#pragma kernel SortData
+
+StructuredBuffer<int> sortedToOriginal;
+  
+StructuredBuffer<float4> positions;
+StructuredBuffer<float4> prevPositions;
+StructuredBuffer<float4> principalRadii;
+StructuredBuffer<float4> userData;
+
+RWStructuredBuffer<float4> sortedPositions;
+RWStructuredBuffer<float4> sortedPrevPositions;
+RWStructuredBuffer<float4> sortedPrincipalRadii;
+RWStructuredBuffer<float4> sortedUserData;
+
+StructuredBuffer<uint> dispatchBuffer; 
+
+[numthreads(128, 1, 1)]
+void SortData (uint3 id : SV_DispatchThreadID)
+{
+    unsigned int i = id.x;
+    if (i >= dispatchBuffer[3]) return;
+    
+    int original = sortedToOriginal[i];
+
+    sortedPositions[i] = positions[original];
+    sortedPrevPositions[i] = prevPositions[original];
+    sortedPrincipalRadii[i] = principalRadii[original];
+    sortedUserData[i] = userData[original];
+}
+

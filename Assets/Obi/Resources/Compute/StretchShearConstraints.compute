@@ -1,0 +1,86 @@
+﻿#pragma kernel Project
+#pragma kernel Apply
+
+#include "MathUtils.cginc"
+#include "AtomicDeltas.cginc"
+
+StructuredBuffer<int> particleIndices;
+StructuredBuffer<int> orientationIndices;
+StructuredBuffer<float> restLengths;
+StructuredBuffer<quaternion> restOrientations;
+StructuredBuffer<float3> stiffnesses;
+RWStructuredBuffer<float3> lambdas;
+
+RWStructuredBuffer<float4> positions;
+RWStructuredBuffer<quaternion> orientations;
+StructuredBuffer<float> invMasses;
+StructuredBuffer<float> invRotationalMasses;
+
+// Variables set from the CPU
+uint activeConstraintCount;
+float deltaTime;
+float sorFactor;
+
+[numthreads(128, 1, 1)]
+void Project (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+
+    if (i >= activeConstraintCount) return;
+
+    int p1 = particleIndices[i * 2];
+    int p2 = particleIndices[i * 2 + 1];
+    int q = orientationIndices[i];
+
+    float w1 = invMasses[p1];
+    float w2 = invMasses[p2];
+
+    // calculate time adjusted compliance
+    float3 compliances = stiffnesses[i] / (deltaTime * deltaTime);
+
+    float3 e = rotate_vector(restOrientations[i], float3(0, 0, 1));
+    quaternion basis = qmul(orientations[q],restOrientations[i]);
+
+    // calculate rod vector in local element space:
+    float3 gamma = rotate_vector(q_conj(basis), (positions[p2] - positions[p1]).xyz) / (restLengths[i] + EPSILON);
+
+    // subtract third director vector (0,0,1):
+    gamma[2] -= 1;
+    
+    float W = (w1 + w2) / (restLengths[i] + EPSILON) + invRotationalMasses[q] * 4.0f * restLengths[i];
+    float3 dlambda = (gamma - compliances * lambdas[i]) / (W + compliances + EPSILON);
+    lambdas[i] += dlambda;
+
+    // convert lambda delta lambda back to world space:
+    dlambda = rotate_vector(basis, dlambda);
+
+    float4 delta1 = float4(dlambda, 0) * w1;
+    float4 delta2 = -float4(dlambda, 0) * w2;
+
+    quaternion e_3 = quaternion(e.x,e.y,e.z,0);
+    quaternion q_e_3_bar = qmul(orientations[q],q_conj(e_3));
+    
+    // calculate rotation delta:
+    quaternion rotDelta = qmul(quaternion(dlambda[0], dlambda[1], dlambda[2], 0.0f),q_e_3_bar);
+    rotDelta *= 2.0f * invRotationalMasses[q] * restLengths[i];
+
+    AddPositionDelta(p1, delta1);
+    AddPositionDelta(p2, delta2); 
+    AddOrientationDelta(q, rotDelta);
+}
+
+[numthreads(128, 1, 1)]
+void Apply (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+   
+    if (i >= activeConstraintCount) return;
+
+    int p1 = particleIndices[i * 2];
+    int p2 = particleIndices[i * 2 + 1];
+    int q = orientationIndices[i];
+
+    ApplyPositionDelta(positions, p1, sorFactor);
+    ApplyPositionDelta(positions, p2, sorFactor);
+    ApplyOrientationDelta(orientations, q, sorFactor);
+}

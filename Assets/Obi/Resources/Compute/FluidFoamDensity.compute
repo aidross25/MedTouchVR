@@ -1,0 +1,172 @@
+﻿#pragma kernel Clear
+#pragma kernel InsertInGrid
+#pragma kernel SortByGrid
+#pragma kernel ComputeDensity
+#pragma kernel ApplyDensity
+
+#include "InterlockedUtils.cginc"
+#include "MathUtils.cginc"
+#include "GridUtils.cginc"
+#include "Simplex.cginc"
+#include "Bounds.cginc"
+#include "SolverParameters.cginc"
+#include "FluidKernels.cginc"
+
+RWStructuredBuffer<int> sortedToOriginal;
+
+RWStructuredBuffer<uint> offsetInCell;
+RWStructuredBuffer<uint> cellStart;    // start of each cell in the sorted item array.
+RWStructuredBuffer<uint> cellCounts;     // number of item in each cell.
+StructuredBuffer<aabb> solverBounds;
+
+RWStructuredBuffer<float4> inputPositions; 
+RWStructuredBuffer<float4> sortedPositions; 
+RWStructuredBuffer<float4> fluidData; 
+
+StructuredBuffer<uint> dispatch;
+
+// each emitter has its own global radius, not possible to have foam emitters interact with each other.
+float particleRadius;
+float smoothingRadius;
+float surfaceTension; 
+float pressure;
+float invMass;
+
+float deltaTime;
+
+[numthreads(128, 1, 1)]
+void Clear (uint3 id : SV_DispatchThreadID)
+{
+    unsigned int i = id.x;
+    if (i >= maxCells) return;
+    
+    // clear all cell counts to zero, and cell offsets to invalid.
+    cellStart[i] = INVALID;
+    cellCounts[i] = 0;
+}
+
+[numthreads(128, 1, 1)]
+void InsertInGrid (uint3 id : SV_DispatchThreadID)
+{
+    unsigned int i = id.x;
+    if (i >= dispatch[3]) return;
+    
+    uint cellIndex = GridHash(floor(inputPositions[i] / smoothingRadius).xyz);
+    InterlockedAdd(cellCounts[cellIndex],1,offsetInCell[i]);
+}
+
+[numthreads(128, 1, 1)]
+void SortByGrid (uint3 id : SV_DispatchThreadID)
+{
+    unsigned int i = id.x;
+    if (i >= dispatch[3]) return;
+    
+    uint cellIndex = GridHash(floor(inputPositions[i] / smoothingRadius).xyz);
+   
+    uint sortedIndex = cellStart[cellIndex] + offsetInCell[i];
+    sortedPositions[sortedIndex] = inputPositions[i];
+    sortedToOriginal[sortedIndex] = i;
+}
+
+[numthreads(128, 1, 1)]
+void ComputeDensity (uint3 id : SV_DispatchThreadID)
+{
+    unsigned int i = id.x;
+    if (i >= dispatch[3]) return;
+
+    float4 positionA = inputPositions[i];
+
+    int3 cellCoords = floor(inputPositions[i] / smoothingRadius).xyz;
+    
+    // self-contribution:
+    float avgKernel = Poly6(0,smoothingRadius);
+    float restVolume = pow(abs(particleRadius * 2),3-mode);
+    float grad = restVolume * Spiky(0,smoothingRadius);
+    
+    float4 fluidDataA = float4(avgKernel,0,grad,grad*grad);
+    
+    float4 positionB;
+    
+    // iterate over neighborhood, calculate density and gradient.
+    for (int k = 0; k < 27; ++k)
+    {
+        uint cellIndex = GridHash(cellCoords + cellNeighborhood[k].xyz);
+        uint start = cellStart[cellIndex];
+
+        for (uint j = 0; j < cellCounts[cellIndex]; ++j)
+        {
+            positionB = sortedPositions[start + j];
+            float3 r = (positionA - positionB).xyz;
+
+            if (mode == 1) 
+                r[2] = 0;
+
+            float dist = length(r);
+
+            if (dist > smoothingRadius) continue;
+            
+            float grad = restVolume * Spiky(dist,smoothingRadius);
+            fluidDataA += float4(Poly6(dist,smoothingRadius),0,grad,grad*grad);
+        }
+    }
+    
+    // self particle contribution to density and gradient:
+    fluidDataA[3] += fluidDataA[2] * fluidDataA[2];
+    
+    // usually, we'd weight density by mass (density contrast formulation) by dividing by invMass. Then, multiply by invMass when
+    // calculating the state equation (density / restDensity - 1, restDensity = mass / volume, so density * invMass * restVolume - 1
+    // We end up with density / invMass * invMass * restVolume - 1, invMass cancels out.
+    float constraint = max(-0.5f * surfaceTension, fluidDataA[0] * restVolume - 1);
+
+    // calculate lambda:
+    fluidDataA[1] = -constraint / (invMass * fluidDataA[3] + EPSILON);
+    
+    fluidData[i] = fluidDataA;
+}
+
+[numthreads(128, 1, 1)]
+void ApplyDensity (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+    if (i >= dispatch[3]) return;
+    
+    int3 cellCoords = floor(inputPositions[i] / smoothingRadius).xyz;
+
+    float restVolume = pow(abs(particleRadius * 2),3-mode); 
+    float4 positionA = inputPositions[i];
+    float4 fluidDataA = fluidData[i];
+
+    float4 fluidDataB;
+    float4 positionB;
+
+    float4 pressureDelta = FLOAT4_ZERO;
+    
+    for (int k = 0; k < 27; ++k)
+    {
+        uint cellIndex = GridHash(cellCoords + cellNeighborhood[k].xyz);
+        uint start = cellStart[cellIndex];
+
+        for (uint j = 0; j < cellCounts[cellIndex]; ++j)
+        {
+            positionB = sortedPositions[start + j];
+            fluidDataB = fluidData[sortedToOriginal[start + j]];
+
+            float4 r = float4((positionA - positionB).xyz,0);
+
+            if (mode == 1) 
+                r[2] = 0;
+
+            float dist = length(r);
+
+            if (dist > smoothingRadius) continue;
+            
+            float wAvg = (0.001f + 0.2f * surfaceTension) * Poly6(dist,smoothingRadius) / Poly6(0,smoothingRadius);
+            float scorrA = - wAvg / (invMass * fluidDataA[3] + EPSILON);
+            float scorrB = - wAvg / (invMass * fluidDataB[3] + EPSILON);
+            pressureDelta += r / (dist + EPSILON) * Spiky(dist,smoothingRadius) * ((fluidDataA[1] + scorrA) + (fluidDataB[1] + scorrB)) * restVolume;
+        }
+    }
+    
+    // write to output positions.
+    inputPositions[i] = positionA + pressure * pressureDelta * invMass;
+}

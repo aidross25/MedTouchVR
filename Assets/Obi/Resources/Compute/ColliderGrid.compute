@@ -1,0 +1,473 @@
+﻿#include "GridUtils.cginc"
+#include "CollisionMaterial.cginc"
+#include "ContactHandling.cginc"
+#include "ColliderDefinitions.cginc"
+#include "Rigidbody.cginc"
+#include "Simplex.cginc"
+#include "Bounds.cginc"
+#include "SolverParameters.cginc"
+#include "AtomicDeltas.cginc"
+#include "Phases.cginc"
+
+#define MAX_CONTACTS_PER_SIMPLEX 64
+
+#pragma kernel Clear
+#pragma kernel BuildUnsortedList
+#pragma kernel FindPopulatedLevels
+#pragma kernel SortList
+#pragma kernel BuildContactList
+#pragma kernel PrefixSumColliderCounts
+#pragma kernel SortContactPairs
+#pragma kernel ApplyForceZones
+#pragma kernel WriteForceZoneResults
+
+StructuredBuffer<float4> positions;
+StructuredBuffer<quaternion> orientations;
+StructuredBuffer<float4> principalRadii;
+StructuredBuffer<float> invMasses;
+StructuredBuffer<float4> velocities;
+RWStructuredBuffer<float4> externalForces;
+RWStructuredBuffer<float4> wind;
+RWStructuredBuffer<float> life;
+
+StructuredBuffer<int> activeParticles;
+StructuredBuffer<int> simplices;
+StructuredBuffer<int> filters;    
+RWStructuredBuffer<aabb> simplexBounds; // bounding box of each simplex. 
+
+StructuredBuffer<aabb> aabbs;
+StructuredBuffer<transform> transforms;
+StructuredBuffer<shape> shapes;
+StructuredBuffer<forceZone> forceZones;
+RWStructuredBuffer<uint> sortedColliderIndices;
+
+RWStructuredBuffer<uint> colliderTypeCounts;
+RWStructuredBuffer<uint> contactOffsetsPerType;
+RWStructuredBuffer<uint2> unsortedContactPairs;
+
+RWStructuredBuffer<uint> cellIndices;
+RWStructuredBuffer<uint> cellOffsets;
+
+RWStructuredBuffer<uint> cellCounts;
+RWStructuredBuffer<uint> offsetInCells;
+
+RWStructuredBuffer<contact> contacts;
+RWStructuredBuffer<uint2> contactPairs;
+RWStructuredBuffer<uint> dispatchBuffer;
+
+StructuredBuffer<transform> solverToWorld;
+StructuredBuffer<transform> worldToSolver;
+
+uint maxContacts;
+uint colliderCount;    // amount of colliders in the grid.
+uint cellsPerCollider; // max amount of cells a collider can be inserted into. Typically this is 8.
+int shapeTypeCount;    // number of different collider shapes, ie: box, sphere, sdf, etc.
+uint particleCount;
+float deltaTime;
+
+[numthreads(128, 1, 1)]
+void Clear (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+
+    if (i == 0)
+    {
+        for (int l = 0; l <= GRID_LEVELS; ++l)
+            levelPopulation[l] = 0;
+    }
+
+    // clear all cell offsets to invalid, so that we can later use atomic minimum to calculate the offset.
+    if (i < maxCells)
+    {
+        cellOffsets[i] = INVALID;
+        cellCounts[i] = 0;
+    }
+
+    // clear all cell indices to invalid.
+    if (i < colliderCount)
+    {
+        for (uint j = 0; j < cellsPerCollider; ++j)
+            cellIndices[i*cellsPerCollider+j] = INVALID;
+    }
+}
+
+[numthreads(128, 1, 1)]
+void BuildUnsortedList (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+    if (i >= colliderCount) return;
+
+    aabb bounds = aabbs[i];
+    int rb = shapes[i].rigidbodyIndex;
+
+    // Expand bounds by rigidbody's linear velocity
+    // (check against out of bounds rigidbody access, can happen when a destroyed collider references a rigidbody that has just been destroyed too)
+    if (rb >= 0)// && rb < rigidbodies.Length)
+        bounds.Sweep(rigidbodies[rb].velocity * deltaTime);
+
+    // Expand bounds by collision material's stick distance:
+    if (shapes[i].materialIndex >= 0) 
+        bounds.Expand(collisionMaterials[shapes[i].materialIndex].stickDistance);
+
+    // calculate bounds size, grid level and cell size:
+    float4 size = bounds.max_ - bounds.min_;
+    float maxSize = max(max (size.x, size.y), size.z);
+    int level = GridLevelForSize(maxSize);
+    float cellSize = CellSizeOfLevel(level);
+    
+    // calculate max and min cell coordinates (force 4th component to zero, might not be after expanding)
+    int4 minCell = floor(bounds.min_ / cellSize);
+    int4 maxCell = floor(bounds.max_ / cellSize);
+    minCell[3] = 0;
+    maxCell[3] = 0;
+
+    // if the collider is 2D, project it to the z = 0 cells.
+    if (shapes[i].is2D())
+    {
+        minCell[2] = 0;
+        maxCell[2] = 0;
+    }
+
+    int4 cellSpan = maxCell - minCell;
+   
+    // insert collider in cells:
+    for (int x = 0; x <= cellSpan[0]; ++x)
+    {
+        for (int y = 0; y <= cellSpan[1]; ++y)
+        {
+            for (int z = 0; z <= cellSpan[2]; ++z)
+            {
+                int cellIndex = GridHash(minCell + int4(x, y, z, level));
+                
+                // calculate flat index of this cell into arrays:
+                int k = x + y*2 + z*4 + i*cellsPerCollider;
+
+                cellIndices[k] = cellIndex;
+                InterlockedAdd(cellCounts[cellIndex],1,offsetInCells[k]);
+            }
+        }
+    }
+
+    // atomically increase this level's population by one:
+    InterlockedAdd(levelPopulation[1 + level],1);
+}
+
+[numthreads(128, 1, 1)]
+void SortList (uint3 id : SV_DispatchThreadID) 
+{
+    uint i = id.x;
+    if (i >= colliderCount * cellsPerCollider) return;
+
+    uint cellIndex = cellIndices[i];
+
+    if (cellIndex != INVALID)
+    {
+        // write collider to its sorted index:
+        uint sortedIndex = cellOffsets[cellIndex] + offsetInCells[i];
+        sortedColliderIndices[sortedIndex] = i;
+    }
+} 
+
+[numthreads(128, 1, 1)]
+void BuildContactList (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int threadIndex = id.x;
+
+    if (threadIndex >= pointCount + edgeCount + triangleCount) return;
+
+    uint cellCount = colliderCount * cellsPerCollider;
+    int candidateCount = 0;
+    uint candidates[MAX_CONTACTS_PER_SIMPLEX];
+    
+    int simplexSize;
+    int simplexStart = GetSimplexStartAndSize(threadIndex, simplexSize);
+    
+    aabb b = simplexBounds[threadIndex].Transformed(solverToWorld[0]);
+
+    // max size of the particle bounds in cells:
+    int4 maxSize = int4(10,10,10,10);
+
+    // build a list of candidate colliders:
+    for (uint m = 1; m <= levelPopulation[0]; ++m)
+    {
+        uint l = levelPopulation[m];
+        float cellSize = CellSizeOfLevel(l);
+
+        int4 minCell = floor(b.min_ / cellSize);
+        int4 maxCell = floor(b.max_ / cellSize);
+        maxCell = minCell + min(maxCell - minCell, maxSize);
+
+        for (int x = minCell[0]; x <= maxCell[0]; ++x)
+        {
+            for (int y = minCell[1]; y <= maxCell[1]; ++y)
+            {
+                // for 2D mode, project each cell at z == 0 and check them too. This way we ensure 2D colliders
+                // (which are inserted in cells with z == 0) are accounted for in the broadphase.
+                if (mode == 1)
+                {
+                    uint flatCellIndex = GridHash(int4(x,y,0,l));
+                    uint cellStart = cellOffsets[flatCellIndex];
+                    uint cellCount = cellCounts[flatCellIndex];
+
+                    // iterate through colliders in the neighbour cell
+                    for (uint n = cellStart; n < cellStart + cellCount; ++n)
+                    {
+                        // sorted insert into the candidates list:
+                        if (candidateCount < MAX_CONTACTS_PER_SIMPLEX)
+                            candidates[candidateCount++] = sortedColliderIndices[n] / cellsPerCollider;
+                    }
+                }
+
+                for (int z = minCell[2]; z <= maxCell[2]; ++z)
+                {
+                    uint flatCellIndex = GridHash(int4(x,y,z,l));
+                    uint cellStart = cellOffsets[flatCellIndex];
+                    uint cellCount = cellCounts[flatCellIndex];
+
+                    // iterate through colliders in the neighbour cell
+                    for (uint n = cellStart; n < cellStart + cellCount; ++n)
+                    {
+                        if (candidateCount < MAX_CONTACTS_PER_SIMPLEX)
+                            candidates[candidateCount++] = sortedColliderIndices[n] / cellsPerCollider;
+                    }
+                   
+                }
+            }
+        }
+    }
+    
+    //evaluate candidates and create contacts: 
+    if (candidateCount > 0)
+    {
+        // insert sort:
+        for (int k = 1; k < candidateCount; ++k)
+        {
+            uint key = candidates[k];
+            int j = k - 1;
+
+            while (j >= 0 && candidates[j] > key)
+                candidates[j + 1] = candidates[j--];
+
+            candidates[j + 1] = key;
+        }
+
+        // make sure each candidate only shows up once in the list:
+        int first = 0, contactCount = 0;
+        while(++first != candidateCount)
+        {
+            if (candidates[contactCount] != candidates[first])
+                candidates[++contactCount] = candidates[first];
+        }
+        contactCount++;
+
+        // append contacts:
+        for (int i = 0; i < contactCount; i++)
+        {
+            int c = candidates[i];
+           
+            aabb colliderBoundsWS = aabbs[c];
+            int rb = shapes[c].rigidbodyIndex;
+
+            // Expand bounds by rigidbody's linear velocity:
+            if (rb >= 0)
+                colliderBoundsWS.Sweep(rigidbodies[rb].velocity * deltaTime);
+
+            // Expand bounds by collision material's stick distance:
+            if (shapes[c].materialIndex >= 0)
+                colliderBoundsWS.Expand(collisionMaterials[shapes[c].materialIndex].stickDistance);
+
+            // check if any simplex particle and the collider should collide:
+            bool shouldCollide = false;
+            int colliderCategory = shapes[c].phase & CategoryMask;
+            int colliderMask = (shapes[c].phase & MaskMask) >> 16;
+            for (int j = 0; j < simplexSize; ++j)
+            {
+                int simplexCategory = filters[simplices[simplexStart + j]] & CategoryMask;
+                int simplexMask = (filters[simplices[simplexStart + j]] & MaskMask) >> 16;
+                shouldCollide = shouldCollide || ((simplexCategory & colliderMask) != 0 && (simplexMask & colliderCategory) != 0);
+            }
+
+            if (shouldCollide && b.IntersectsAabb(colliderBoundsWS, mode == 1))
+            {
+                uint count;
+                InterlockedAdd(dispatchBuffer[7], 1, count);
+
+                // technically incorrect, as number of pairs != number of contacts but
+                // we will ignore either excess pairs or contacts.
+                if (count < maxContacts) 
+                {
+                    // increment the amount of contacts for this shape type:
+                    InterlockedAdd(colliderTypeCounts[shapes[c].type],1);
+
+                    // enqueue a new contact pair:
+                    unsortedContactPairs[count] = uint2(threadIndex,c);
+
+                    InterlockedMax(dispatchBuffer[4],(count + 1) / 128 + 1);
+                }
+            }
+        }
+    }   
+}
+
+[numthreads(1, 1, 1)]
+void PrefixSumColliderCounts (uint3 id : SV_DispatchThreadID) 
+{
+    contactOffsetsPerType[0] = 0;
+    int i;
+
+    for (i = 0; i < shapeTypeCount; ++i)
+    {
+        contactOffsetsPerType[i+1] = contactOffsetsPerType[i] + colliderTypeCounts[i];
+
+        // write amount of pairs per collider type in the dispatch buffer:
+        dispatchBuffer[8 + i*4] = colliderTypeCounts[i] / 128 + 1;
+        dispatchBuffer[8 + i*4 + 3] = colliderTypeCounts[i];
+    }
+}
+
+[numthreads(128, 1, 1)]
+void SortContactPairs (uint3 id : SV_DispatchThreadID) 
+{
+    uint i = id.x;
+    if (i >= dispatchBuffer[7] || i >= maxContacts) return;
+
+    uint2 pair = unsortedContactPairs[i];
+    int shapeType = (int)shapes[pair.y].type;
+
+    // decrement amount of pairs for the given collider type:
+    uint count;
+    InterlockedAdd(colliderTypeCounts[shapeType],-1, count);
+
+    // write the pair directly at its position in the sorted array:
+    contactPairs[contactOffsetsPerType[shapeType] + count - 1] = pair;
+}
+
+void AtomicAddExternalForceDelta(in int index, in float4 delta)
+{
+    InterlockedAddFloat(deltasAsInt, index, 0, delta.x);
+    InterlockedAddFloat(deltasAsInt, index, 1, delta.y);
+    InterlockedAddFloat(deltasAsInt, index, 2, delta.z);
+}
+
+void AtomicAddWindDelta(in int index, in float4 delta)
+{
+    InterlockedAddFloat(orientationDeltasAsInt, index, 0, delta.x);
+    InterlockedAddFloat(orientationDeltasAsInt, index, 1, delta.y);
+    InterlockedAddFloat(orientationDeltasAsInt, index, 2, delta.z);
+}
+
+void AtomicAddLifeDelta(in int index, in float delta)
+{
+    InterlockedAddFloat(deltasAsInt, index, 3, delta);
+}
+
+[numthreads(128, 1, 1)]
+void ApplyForceZones (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+    if (i >= dispatchBuffer[3]) return;
+    
+    int forceZoneIndex = shapes[contacts[i].bodyB].forceZoneIndex;
+
+    if (forceZoneIndex >= 0)
+    {
+        int simplexSize;
+        int simplexStart = GetSimplexStartAndSize(contacts[i].bodyA, simplexSize);
+       
+        for (int j = 0; j < simplexSize; ++j)
+        {
+            int particleIndex = simplices[simplexStart + j];
+
+            if (invMasses[particleIndex] > 0)
+            {
+                float dist = -dot(positions[particleIndex] - contacts[i].pointB, contacts[i].normal);
+                if (dist < 0) continue;
+                
+                float4 axis = worldToSolver[0].Multiply(transforms[contacts[i].bodyB]).TransformDirection(float4(0, 0, 1, 0));
+                
+                // calculate falloff region based on min/max distances:
+                float falloff = 1;
+                float range = forceZones[forceZoneIndex].maxDistance - forceZones[forceZoneIndex].minDistance;
+                if (abs(range) > EPSILON)
+                    falloff = pow(saturate((dist - forceZones[forceZoneIndex].minDistance) / range), forceZones[forceZoneIndex].falloffPower);
+
+                float forceIntensity = forceZones[forceZoneIndex].intensity * falloff;
+                float dampIntensity  = forceZones[forceZoneIndex].damping * falloff;
+
+                // calculate force direction, depending on the type of the force field:
+                float4 result = FLOAT4_ZERO;
+                switch (forceZones[forceZoneIndex].type)
+                {
+                    case ZONETYPE_RADIAL:
+                        result = contacts[i].normal * forceIntensity;
+                        break;
+                    case ZONETYPE_VORTEX:
+                        result = float4(cross(axis.xyz * forceIntensity, contacts[i].normal.xyz),0);
+                        break;
+                    case ZONETYPE_DIRECTIONAL:
+                        result = axis * forceIntensity;
+                        break;
+                    default:
+                        AtomicAddLifeDelta(particleIndex, -forceIntensity * deltaTime);
+                        return;
+                }
+
+                // calculate damping along force direction:
+                float4 dampingDir;
+                switch (forceZones[forceZoneIndex].dampingDir)
+                {
+                    case DAMPDIR_FORCE:
+                        {
+                            float4 forceDir = normalizesafe(result);
+                            result -= forceDir * dot(velocities[particleIndex], forceDir) * dampIntensity; 
+                        }
+                        break;
+                    case DAMPDIR_SURFACE:
+                            result -= contacts[i].normal * dot(velocities[particleIndex], contacts[i].normal) * dampIntensity;
+                        break;
+                    default:
+                            result -= velocities[particleIndex] * dampIntensity;
+                        break;
+                }
+                
+                // here we reuse position and orientation delta buffers as velocity and wind buffers for atomic writes:
+                switch (forceZones[forceZoneIndex].mode)
+                {
+                    case FORCEMODE_ACCEL:
+                        AtomicAddExternalForceDelta(particleIndex, result / simplexSize / invMasses[particleIndex]);
+                    break;
+                    case FORCEMODE_FORCE:
+                        AtomicAddExternalForceDelta(particleIndex, result / simplexSize);
+                    break;
+                    case FORCEMODE_WIND:
+                        AtomicAddWindDelta(particleIndex, result / simplexSize);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+[numthreads(128, 1, 1)]
+void WriteForceZoneResults (uint3 id : SV_DispatchThreadID) 
+{
+    unsigned int i = id.x;
+    if (i >= particleCount) return;
+
+    int p = activeParticles[i];
+   
+    externalForces[p].xyz += float3(asfloat(deltasAsInt[p].x),
+                                    asfloat(deltasAsInt[p].y),
+                                    asfloat(deltasAsInt[p].z));
+
+    wind[p].xyz += float3(asfloat(orientationDeltasAsInt[p].x),
+                          asfloat(orientationDeltasAsInt[p].y),
+                          asfloat(orientationDeltasAsInt[p].z));
+
+    life[p] += asfloat(deltasAsInt[p].w);
+
+    deltasAsInt[p] = uint4(0, 0, 0, 0);
+    orientationDeltasAsInt[p] = uint4(0, 0, 0, 0);
+}
+
+
